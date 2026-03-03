@@ -1,0 +1,582 @@
+---
+title: Message Framing
+description: API reference for OpenMLS message framing types (MlsMessageIn/Out)
+---
+
+Message framing provides a unified wrapper for all MLS message types with serialization and wire format handling.
+
+## Overview
+
+OpenMLS uses two framing types:
+- **MlsMessageOut**: Messages being sent (serialized to wire)
+- **MlsMessageIn**: Messages being received (deserialized from wire)
+
+This separation ensures type safety and proper validation flow.
+
+## MLSMessage Structure
+
+```c
+// RFC 9420
+struct {
+    ProtocolVersion version = mls10;
+    WireFormat wire_format;
+    select (MLSMessage.wire_format) {
+        case mls_plaintext:
+            PublicMessage plaintext;
+        case mls_ciphertext:
+            PrivateMessage ciphertext;
+        case mls_welcome:
+            Welcome welcome;
+        case mls_group_info:
+            GroupInfo group_info;
+        case mls_key_package:
+            KeyPackage key_package;
+    }
+} MLSMessage;
+```
+
+<ResponseField name="version" type="ProtocolVersion">
+  MLS protocol version (currently `mls10`)
+</ResponseField>
+
+<ResponseField name="wire_format" type="WireFormat">
+  Discriminator for message type
+</ResponseField>
+
+<ResponseField name="body" type="MlsMessageBody">
+  Message content (type determined by wire_format)
+</ResponseField>
+
+## WireFormat
+
+The wire format enum identifies the message type.
+
+```rust
+pub enum WireFormat {
+    PublicMessage = 1,
+    PrivateMessage = 2,
+    Welcome = 3,
+    GroupInfo = 4,
+    KeyPackage = 5,
+}
+```
+
+<ResponseField name="PublicMessage" type="0x0001">
+  Unencrypted message (proposals, commits from external senders)
+</ResponseField>
+
+<ResponseField name="PrivateMessage" type="0x0002">  
+  Encrypted message (application data, member proposals/commits)
+</ResponseField>
+
+<ResponseField name="Welcome" type="0x0003">
+  Welcome message for new members
+</ResponseField>
+
+<ResponseField name="GroupInfo" type="0x0004">
+  Group state information
+</ResponseField>
+
+<ResponseField name="KeyPackage" type="0x0005">
+  Key package for inviting users
+</ResponseField>
+
+## MlsMessageOut
+
+Messages created by OpenMLS for sending.
+
+```rust
+pub struct MlsMessageOut {
+    pub(crate) version: ProtocolVersion,
+    pub(crate) body: MlsMessageBodyOut,
+}
+```
+
+### MlsMessageBodyOut
+
+```rust
+pub enum MlsMessageBodyOut {
+    PublicMessage(PublicMessage),
+    PrivateMessage(PrivateMessage),
+    Welcome(Welcome),
+    GroupInfo(GroupInfo),
+    KeyPackage(KeyPackage),
+}
+```
+
+### Creating Messages
+
+```rust
+use openmls::prelude::*;
+
+// From group operations
+let message = group.create_message(provider, &signer, b"data")?;
+// message is MlsMessageOut containing PrivateMessage
+
+let (commit, welcome, _) = group.commit_to_pending_proposals(
+    provider,
+    &signer
+)?;
+// commit is MlsMessageOut containing PublicMessage or PrivateMessage
+// welcome is Option<MlsMessageOut> containing Welcome
+```
+
+### Serialization
+
+```rust
+// Serialize to bytes
+let bytes = message.tls_serialize_detached()?;
+
+// Or use convenience method
+let bytes = message.to_bytes()?;
+
+// Send over network
+send_to_server(bytes);
+```
+
+### Conversion
+
+Create MlsMessageOut from specific message types:
+
+```rust
+// From PrivateMessage
+let msg_out = MlsMessageOut::from(private_message);
+
+// From PublicMessage  
+let msg_out = MlsMessageOut::from(public_message);
+
+// From Welcome with version
+let msg_out = MlsMessageOut::from_welcome(
+    welcome,
+    ProtocolVersion::default()
+);
+```
+
+## MlsMessageIn
+
+Messages received and deserialized from the wire.
+
+```rust
+pub struct MlsMessageIn {
+    pub(crate) version: ProtocolVersion,
+    pub(crate) body: MlsMessageBodyIn,
+}
+```
+
+### MlsMessageBodyIn
+
+```rust
+pub enum MlsMessageBodyIn {
+    PublicMessage(PublicMessageIn),
+    PrivateMessage(PrivateMessageIn),
+    Welcome(Welcome),
+    GroupInfo(VerifiableGroupInfo),
+    KeyPackage(KeyPackageIn),
+}
+```
+
+<Note>
+  Input types (`PublicMessageIn`, `PrivateMessageIn`, etc.) require validation before use.
+</Note>
+
+### Deserialization
+
+```rust
+use openmls::prelude::*;
+
+// Deserialize from bytes
+let message_in = MlsMessageIn::tls_deserialize(
+    &mut bytes.as_slice()
+)?;
+
+// Check wire format
+match message_in.wire_format() {
+    WireFormat::PrivateMessage => { /* encrypted */ }
+    WireFormat::Welcome => { /* welcome */ }
+    _ => {}
+}
+```
+
+### Extracting Content
+
+```rust
+// Extract body
+let body = message_in.extract();
+
+match body {
+    MlsMessageBodyIn::PrivateMessage(pm) => {
+        // Process encrypted message
+    }
+    MlsMessageBodyIn::Welcome(welcome) => {
+        // Process welcome
+    }
+    MlsMessageBodyIn::GroupInfo(group_info) => {
+        // Process group info
+    }
+    _ => {}
+}
+```
+
+### ProtocolMessage
+
+Convenience type for processing protocol messages (Public/Private).
+
+```rust
+pub enum ProtocolMessage {
+    PrivateMessage(PrivateMessageIn),
+    PublicMessage(Box<PublicMessageIn>),
+}
+```
+
+<ParamField path="wire_format()" type="WireFormat">
+  Returns the wire format of this message
+</ParamField>
+
+<ParamField path="group_id()" type="&GroupId">
+  Returns the group ID this message belongs to
+</ParamField>
+
+<ParamField path="epoch()" type="GroupEpoch">
+  Returns the epoch this message was sent in
+</ParamField>
+
+<ParamField path="content_type()" type="ContentType">
+  Returns the content type (Application/Proposal/Commit)
+</ParamField>
+
+<ParamField path="is_handshake_message()" type="bool">
+  Returns true for Proposal and Commit messages
+</ParamField>
+
+<ParamField path="is_external()" type="bool">
+  Returns true for external proposals and commits
+</ParamField>
+
+### Converting to ProtocolMessage
+
+```rust
+// From MlsMessageIn
+let protocol_message = message_in.try_into_protocol_message()?;
+
+// Process in group
+let processed = group.process_message(provider, protocol_message)?;
+```
+
+## PublicMessage
+
+Unencrypted framing for proposals and commits.
+
+```c
+// RFC 9420  
+struct {
+    FramedContent content;
+    FramedContentAuthData auth;
+    optional<MAC> membership_tag;
+} PublicMessage;
+```
+
+<ResponseField name="content" type="FramedContent">
+  The message content (group_id, epoch, sender, body)
+</ResponseField>
+
+<ResponseField name="auth" type="FramedContentAuthData">
+  Authentication data (signature, optional confirmation_tag)
+</ResponseField>
+
+<ResponseField name="membership_tag" type="Option<Mac>">
+  Membership tag for member authentication
+</ResponseField>
+
+### When Used
+
+- External proposals (NewMemberProposal sender)
+- External commits (NewMemberCommit sender)
+- Proposals/commits when configured for public messaging
+
+### Authentication
+
+PublicMessages include:
+
+1. **Signature**: All PublicMessages are signed
+2. **Membership Tag**: Members include MAC for authentication
+3. **Confirmation Tag**: Commits include confirmation tag
+
+```rust
+// Signature verification
+public_message.verify_signature(crypto, ciphersuite, &public_key)?;
+
+// Membership tag verification  
+public_message.verify_membership_tag(
+    crypto,
+    ciphersuite,
+    &membership_key,
+    &serialized_context
+)?;
+```
+
+## PrivateMessage
+
+Encrypted framing for confidential messages.
+
+```c
+// RFC 9420
+struct {
+    opaque group_id<V>;
+    uint64 epoch;
+    ContentType content_type;
+    opaque authenticated_data<V>;
+    opaque encrypted_sender_data<V>;
+    opaque ciphertext<V>;
+} PrivateMessage;
+```
+
+<ResponseField name="group_id" type="GroupId">
+  Group identifier (plaintext for routing)
+</ResponseField>
+
+<ResponseField name="epoch" type="uint64">
+  Epoch number (plaintext for key selection)
+</ResponseField>
+
+<ResponseField name="content_type" type="ContentType">
+  Type of content (Application/Proposal/Commit)
+</ResponseField>
+
+<ResponseField name="authenticated_data" type="opaque<V>">
+  Additional authenticated data
+</ResponseField>
+
+<ResponseField name="encrypted_sender_data" type="opaque<V>">
+  Encrypted sender information (leaf_index, generation)
+</ResponseField>
+
+<ResponseField name="ciphertext" type="opaque<V>">
+  Encrypted message content
+</ResponseField>
+
+### Decryption Flow
+
+1. Decrypt sender data to identify sender
+2. Get decryption key from secret tree (sender, generation)
+3. Decrypt ciphertext to recover content
+4. Verify signature in decrypted auth data
+
+```rust
+// Process private message
+let decrypted = group.process_message(
+    provider,
+    ProtocolMessage::PrivateMessage(private_message)
+)?;
+```
+
+## ContentType
+
+Identifies the type of content in a message.
+
+```rust
+pub enum ContentType {
+    Application = 1,
+    Proposal = 2,
+    Commit = 3,
+}
+```
+
+<ResponseField name="Application" type="0x01">
+  Application data message
+</ResponseField>
+
+<ResponseField name="Proposal" type="0x02">
+  Proposal message
+</ResponseField>
+
+<ResponseField name="Commit" type="0x03">
+  Commit message
+</ResponseField>
+
+### Methods
+
+```rust
+impl ContentType {
+    pub fn is_handshake_message(&self) -> bool {
+        self == &ContentType::Proposal || self == &ContentType::Commit
+    }
+}
+```
+
+## FramedContent
+
+Core content structure used in both Public and Private messages.
+
+```c
+struct {
+    opaque group_id<V>;
+    uint64 epoch;
+    Sender sender;
+    opaque authenticated_data<V>;
+    ContentType content_type;
+    select (FramedContent.content_type) {
+        case application:
+            opaque application_data<V>;
+        case proposal:
+            Proposal proposal;
+        case commit:
+            Commit commit;
+    }
+} FramedContent;
+```
+
+<ParamField path="group_id" type="GroupId" required>
+  Group identifier
+</ParamField>
+
+<ParamField path="epoch" type="GroupEpoch" required>
+  Epoch number
+</ParamField>
+
+<ParamField path="sender" type="Sender" required>
+  Message sender
+</ParamField>
+
+<ParamField path="authenticated_data" type="VLBytes" required>
+  Additional authenticated data
+</ParamField>
+
+<ParamField path="body" type="FramedContentBody" required>
+  Message content (Application/Proposal/Commit)
+</ParamField>
+
+## Sender
+
+Identifies who sent the message.
+
+```rust
+pub enum Sender {
+    Member(LeafNodeIndex),
+    External(u32),
+    NewMemberProposal,
+    NewMemberCommit,
+}
+```
+
+<ResponseField name="Member" type="LeafNodeIndex">
+  Message from existing group member
+</ResponseField>
+
+<ResponseField name="External" type="u32">
+  Message from external sender (signature key index)
+</ResponseField>
+
+<ResponseField name="NewMemberProposal">
+  External proposal from prospective member
+</ResponseField>
+
+<ResponseField name="NewMemberCommit">
+  External commit from joining member
+</ResponseField>
+
+## Examples
+
+### Send Application Message
+
+```rust
+use openmls::prelude::*;
+
+// Create message
+let message_out = group.create_message(
+    provider,
+    &signer,
+    b"Hello, world!"
+)?;
+
+// Serialize and send
+let bytes = message_out.tls_serialize_detached()?;
+send_to_delivery_service(bytes);
+```
+
+### Receive and Process
+
+```rust
+// Receive bytes
+let bytes = receive_from_delivery_service();
+
+// Deserialize
+let message_in = MlsMessageIn::tls_deserialize(
+    &mut bytes.as_slice()
+)?;
+
+// Convert to protocol message
+let protocol_message = message_in.try_into_protocol_message()?;
+
+// Process
+let processed = group.process_message(provider, protocol_message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::ApplicationMessage(app_msg) => {
+        println!("Application: {:?}", app_msg.into_bytes());
+    }
+    ProcessedMessageContent::ProposalMessage(proposal) => {
+        println!("Proposal: {:?}", proposal);
+    }
+    ProcessedMessageContent::StagedCommitMessage(commit) => {
+        group.merge_staged_commit(provider, *commit)?;
+        println!("Processed commit");
+    }
+    _ => {}
+}
+```
+
+### Handle Welcome
+
+```rust
+// Receive welcome
+let bytes = receive_welcome();
+let message_in = MlsMessageIn::tls_deserialize(&mut bytes.as_slice())?;
+
+if let MlsMessageBodyIn::Welcome(welcome) = message_in.extract() {
+    // Join group
+    let group = StagedWelcome::new_from_welcome(
+        provider,
+        &config,
+        welcome,
+        None,
+    )?.into_group(provider)?;
+    
+    println!("Joined group: {:?}", group.group_id());
+}
+```
+
+### Routing by Wire Format
+
+```rust
+let message_in = MlsMessageIn::tls_deserialize(&mut bytes.as_slice())?;
+
+match message_in.wire_format() {
+    WireFormat::PrivateMessage | WireFormat::PublicMessage => {
+        // Protocol message - process in group
+        let protocol_msg = message_in.try_into_protocol_message()?;
+        group.process_message(provider, protocol_msg)?;
+    }
+    WireFormat::Welcome => {
+        // Welcome - join new group
+        let welcome = message_in.into_welcome().unwrap();
+        handle_welcome(welcome)?;
+    }
+    WireFormat::GroupInfo => {
+        // Group info - for external commits
+        let group_info = message_in.into_verifiable_group_info().unwrap();
+        handle_group_info(group_info)?;
+    }
+    WireFormat::KeyPackage => {
+        // Key package - store for inviting user
+        let key_package = message_in.into_keypackage().unwrap();
+        store_key_package(key_package)?;
+    }
+}
+```
+
+## Related Types
+
+- [Application Messages](/api/messages/application) - Application data
+- [Proposals](/api/messages/proposals) - Proposal types
+- [Commits](/api/messages/commits) - Commit messages
+- [Welcome](/api/messages/welcome) - Welcome messages

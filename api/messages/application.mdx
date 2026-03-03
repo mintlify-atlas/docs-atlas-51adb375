@@ -1,0 +1,297 @@
+---
+title: Application Messages
+description: API reference for OpenMLS application message types and encryption
+---
+
+Application messages in OpenMLS allow encrypted communication between group members. These messages are always encrypted using `PrivateMessage` framing.
+
+## Overview
+
+Application messages carry arbitrary application data between group members. Unlike proposals and commits, application messages do not modify group state.
+
+### Message Flow
+
+```text
+Application Data
+      |
+      v
+FramedContent (Application)
+      |
+      v
+AuthenticatedContent
+      |
+      v
+PrivateMessage (encrypted)
+```
+
+## FramedContentBody::Application
+
+The application content is wrapped in a `FramedContentBody` variant.
+
+<ParamField path="Application" type="VLBytes">
+  Variable-length byte array containing application data
+</ParamField>
+
+### Creating Application Messages
+
+```rust
+use openmls::framing::FramedContentBody;
+
+let app_data = b"Hello, group!";
+let content = FramedContentBody::application(app_data);
+```
+
+## ContentType
+
+Application messages use the `Application` content type.
+
+<ResponseField name="ContentType::Application" type="u8" value="1">
+  Indicates this message contains application data
+</ResponseField>
+
+### Properties
+
+```rust
+pub enum ContentType {
+    Application = 1,
+    Proposal = 2,
+    Commit = 3,
+}
+```
+
+<ParamField path="is_handshake_message()" type="bool">
+  Returns `false` for application messages (only `Proposal` and `Commit` are handshake messages)
+</ParamField>
+
+## PrivateMessage
+
+Application messages are always encrypted as `PrivateMessage` for confidentiality.
+
+### Structure
+
+```c
+// RFC 9420
+struct {
+    opaque group_id<V>;
+    uint64 epoch;
+    ContentType content_type;
+    opaque authenticated_data<V>;
+    opaque encrypted_sender_data<V>;
+    opaque ciphertext<V>;
+} PrivateMessage;
+```
+
+<ResponseField name="group_id" type="GroupId">
+  Identifier of the group this message belongs to
+</ResponseField>
+
+<ResponseField name="epoch" type="uint64">
+  The epoch in which this message was sent
+</ResponseField>
+
+<ResponseField name="content_type" type="ContentType">
+  Set to `ContentType::Application` (1) for application messages
+</ResponseField>
+
+<ResponseField name="authenticated_data" type="opaque<V>">
+  Additional authenticated data (AAD) provided by the sender
+</ResponseField>
+
+<ResponseField name="encrypted_sender_data" type="opaque<V>">
+  Encrypted sender information (leaf index, generation, reuse guard)
+</ResponseField>
+
+<ResponseField name="ciphertext" type="opaque<V>">
+  Encrypted application payload with authentication tag
+</ResponseField>
+
+### Encryption
+
+Application messages use AEAD encryption with keys derived from the secret tree.
+
+```rust
+use openmls::prelude::*;
+
+// Send application message
+let message = group.create_message(
+    provider,
+    &signer,
+    b"Application data"
+)?;
+
+// message is a PrivateMessage wrapped in MlsMessageOut
+```
+
+### Decryption
+
+```rust
+// Process incoming application message
+let processed = group.process_message(
+    provider,
+    protocol_message
+)?;
+
+if let ProcessedMessageContent::ApplicationMessage(app_msg) = processed.into_content() {
+    // Handle application data
+    let data = app_msg.into_bytes();
+}
+```
+
+## Sender Data Encryption
+
+The sender's identity is encrypted separately to provide metadata privacy.
+
+### MlsSenderData
+
+```c
+struct {
+    uint32 leaf_index;
+    uint32 generation;
+    opaque reuse_guard[4];
+} MlsSenderData;
+```
+
+<ParamField path="leaf_index" type="uint32">
+  The sender's leaf index in the ratchet tree
+</ParamField>
+
+<ParamField path="generation" type="uint32">
+  The generation of the secret tree key used for encryption
+</ParamField>
+
+<ParamField path="reuse_guard" type="opaque[4]">
+  Random value to prevent nonce reuse
+</ParamField>
+
+### Sender Data AAD
+
+```rust
+struct PrivateContentAad {
+    group_id: GroupId,
+    epoch: GroupEpoch,
+    content_type: ContentType,
+    authenticated_data: VLBytes,
+}
+```
+
+## Padding
+
+Application messages can include padding to obscure message length.
+
+```rust
+// Send message with padding
+let padding_size = 128; // bytes
+let message = group.create_message_with_padding(
+    provider,
+    &signer,
+    b"Secret data",
+    padding_size
+)?;
+```
+
+<ParamField path="padding_size" type="usize">
+  Padding block size in bytes. Actual padding will align the ciphertext to this block size.
+</ParamField>
+
+## Security Considerations
+
+### Forward Secrecy
+
+Application messages provide forward secrecy through key ratcheting:
+- Each message uses a unique key derived from the secret tree
+- Keys are deleted after use
+- Compromise of current keys does not compromise past messages
+
+### Metadata Privacy
+
+The sender's identity is encrypted to prevent traffic analysis:
+- Sender data is encrypted separately from content
+- Only group members can determine who sent a message
+
+### Ordering
+
+Application messages can be processed out-of-order within the same epoch:
+- Each sender maintains their own ratchet
+- Generation counters track message sequence per sender
+
+## Error Handling
+
+### Encryption Errors
+
+```rust
+pub enum MessageEncryptionError {
+    WrongWireFormat,
+    LibraryError(LibraryError),
+    SecretTreeError(SecretTreeError),
+}
+```
+
+### Decryption Errors
+
+```rust
+pub enum MessageDecryptionError {
+    AeadError,
+    GenerationOutOfBound,
+    SenderNotFound,
+    WrongEpoch,
+}
+```
+
+## Examples
+
+### Send Application Message
+
+```rust
+use openmls::prelude::*;
+
+// Create and send application message
+let message_out = group.create_message(
+    provider,
+    &signer,
+    b"Hello from Alice!"
+)?;
+
+// Serialize for transmission
+let bytes = message_out.tls_serialize_detached()?;
+```
+
+### Receive Application Message
+
+```rust
+use openmls::prelude::*;
+
+// Deserialize received message
+let message_in = MlsMessageIn::tls_deserialize(&mut bytes.as_slice())?;
+
+// Extract protocol message
+let protocol_message = message_in.try_into_protocol_message()?;
+
+// Process in group
+let processed = group.process_message(provider, protocol_message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::ApplicationMessage(app_msg) => {
+        println!("Received: {:?}", app_msg.into_bytes());
+    }
+    _ => {} // Handle other message types
+}
+```
+
+### With Authenticated Data
+
+```rust
+// Include additional authenticated data
+let aad = b"context-info";
+let message = group.create_message_with_aad(
+    provider,
+    &signer,
+    b"Message content",
+    aad
+)?;
+```
+
+## Related Types
+
+- [Message Framing](/api/messages/framing) - MlsMessageIn/Out wrapper types
+- [Proposals](/api/messages/proposals) - Group modification proposals
+- [Commits](/api/messages/commits) - Group state transitions

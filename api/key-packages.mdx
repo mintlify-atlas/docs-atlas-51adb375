@@ -1,0 +1,562 @@
+---
+title: Key Packages
+description: KeyPackage and KeyPackageBundle for asynchronous group operations
+---
+
+## Overview
+
+Key packages are pre-published public keys that enable asynchronous addition of clients to MLS groups. They contain:
+
+- Protocol version and ciphersuite
+- Public HPKE init key for key agreement
+- Credential authenticating the client
+- Leaf node with encryption key
+- Extensions for additional metadata
+
+<Warning>
+  Key packages should be used only once. Reuse should be avoided except as a last resort when no other key package is available.
+</Warning>
+
+## KeyPackage
+
+The main key package structure representing a client's published public keys.
+
+<ParamField path="KeyPackage" type="struct">
+  A signed key package containing client public keys and identity
+
+  <Expandable title="Internal Structure">
+    <ResponseField name="payload" type="KeyPackageTbs">
+      The unsigned key package data
+    </ResponseField>
+
+    <ResponseField name="signature" type="Signature">
+      Signature over the payload using the credential's signature key
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### KeyPackageTbs (Payload)
+
+<ParamField path="KeyPackageTbs" type="struct">
+  The unsigned payload of a key package
+
+  <Expandable title="Fields">
+    <ResponseField name="protocol_version" type="ProtocolVersion">
+      The MLS protocol version (defaults to MLS 1.0)
+    </ResponseField>
+
+    <ResponseField name="ciphersuite" type="Ciphersuite">
+      The ciphersuite this key package supports
+    </ResponseField>
+
+    <ResponseField name="init_key" type="InitKey">
+      The HPKE public init key (must be unique among the client's key packages)
+    </ResponseField>
+
+    <ResponseField name="leaf_node" type="LeafNode">
+      The leaf node containing the credential and encryption key
+    </ResponseField>
+
+    <ResponseField name="extensions" type="Extensions<KeyPackage>">
+      Key package extensions
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+<ResponseField name="builder" type="fn() -> KeyPackageBuilder">
+  Creates a new key package builder
+
+  ```rust
+  pub fn builder() -> KeyPackageBuilder
+  ```
+</ResponseField>
+
+<ResponseField name="ciphersuite" type="fn(&self) -> Ciphersuite">
+  Returns the ciphersuite
+
+  ```rust
+  pub fn ciphersuite(&self) -> Ciphersuite
+  ```
+</ResponseField>
+
+<ResponseField name="leaf_node" type="fn(&self) -> &LeafNode">
+  Returns a reference to the leaf node
+
+  ```rust
+  pub fn leaf_node(&self) -> &LeafNode
+  ```
+</ResponseField>
+
+<ResponseField name="hpke_init_key" type="fn(&self) -> &InitKey">
+  Returns the HPKE init key
+
+  ```rust
+  pub fn hpke_init_key(&self) -> &InitKey
+  ```
+</ResponseField>
+
+<ResponseField name="extensions" type="fn(&self) -> &Extensions<KeyPackage>">
+  Returns the key package extensions
+
+  ```rust
+  pub fn extensions(&self) -> &Extensions<KeyPackage>
+  ```
+</ResponseField>
+
+<ResponseField name="hash_ref" type="fn(&self, &impl OpenMlsCrypto) -> Result<KeyPackageRef, LibraryError>">
+  Computes the hash reference for this key package
+
+  ```rust
+  pub fn hash_ref(&self, crypto: &impl OpenMlsCrypto) -> Result<KeyPackageRef, LibraryError>
+  ```
+
+  The KeyPackageRef is used to identify members when adding them to groups.
+</ResponseField>
+
+<ResponseField name="last_resort" type="fn(&self) -> bool">
+  Checks if this is a last-resort key package
+
+  ```rust
+  pub fn last_resort(&self) -> bool
+  ```
+</ResponseField>
+
+<ResponseField name="life_time" type="fn(&self) -> &Lifetime">
+  Returns the lifetime of the key package
+
+  ```rust
+  pub fn life_time(&self) -> &Lifetime
+  ```
+</ResponseField>
+
+<ResponseField name="check_extension_support" type="fn(&self, &[ExtensionType]) -> Result<(), KeyPackageExtensionSupportError>">
+  Checks if this key package supports all required extensions
+
+  ```rust
+  pub fn check_extension_support(
+      &self,
+      required_extensions: &[ExtensionType],
+  ) -> Result<(), KeyPackageExtensionSupportError>
+  ```
+</ResponseField>
+
+## KeyPackageBuilder
+
+Builder for creating and configuring key packages.
+
+<ParamField path="KeyPackageBuilder" type="struct">
+  Builder for constructing key packages with custom configuration
+
+  <Expandable title="Fields">
+    <ResponseField name="key_package_lifetime" type="Option<Lifetime>">
+      Optional custom lifetime
+    </ResponseField>
+
+    <ResponseField name="key_package_extensions" type="Option<Extensions<KeyPackage>>">
+      Optional key package extensions
+    </ResponseField>
+
+    <ResponseField name="leaf_node_capabilities" type="Option<Capabilities>">
+      Optional leaf node capabilities
+    </ResponseField>
+
+    <ResponseField name="leaf_node_extensions" type="Option<Extensions<LeafNode>>">
+      Optional leaf node extensions
+    </ResponseField>
+
+    <ResponseField name="last_resort" type="bool">
+      Whether to mark as last-resort
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+<ResponseField name="new" type="fn() -> Self">
+  Creates a new key package builder
+
+  ```rust
+  pub fn new() -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="key_package_lifetime" type="fn(self, Lifetime) -> Self">
+  Sets the key package lifetime
+
+  ```rust
+  pub fn key_package_lifetime(mut self, lifetime: Lifetime) -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="key_package_extensions" type="fn(self, Extensions<KeyPackage>) -> Self">
+  Sets the key package extensions
+
+  ```rust
+  pub fn key_package_extensions(mut self, extensions: Extensions<KeyPackage>) -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="mark_as_last_resort" type="fn(self) -> Self">
+  Marks the key package as a last-resort package
+
+  ```rust
+  pub fn mark_as_last_resort(mut self) -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="leaf_node_capabilities" type="fn(self, Capabilities) -> Self">
+  Sets the leaf node capabilities
+
+  ```rust
+  pub fn leaf_node_capabilities(mut self, capabilities: Capabilities) -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="leaf_node_extensions" type="fn(self, Extensions<LeafNode>) -> Self">
+  Sets the leaf node extensions
+
+  ```rust
+  pub fn leaf_node_extensions(mut self, extensions: Extensions<LeafNode>) -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="build" type="fn(self, Ciphersuite, &impl OpenMlsProvider, &impl Signer, CredentialWithKey) -> Result<KeyPackageBundle, KeyPackageNewError>">
+  Builds and signs the key package, storing it in the provider's storage
+
+  ```rust
+  pub fn build(
+      self,
+      ciphersuite: Ciphersuite,
+      provider: &impl OpenMlsProvider,
+      signer: &impl Signer,
+      credential_with_key: CredentialWithKey,
+  ) -> Result<KeyPackageBundle, KeyPackageNewError>
+  ```
+
+  <Expandable title="Parameters">
+    <ParamField path="ciphersuite" type="Ciphersuite" required>
+      The ciphersuite to use
+    </ParamField>
+
+    <ParamField path="provider" type="&impl OpenMlsProvider" required>
+      The cryptographic and storage provider
+    </ParamField>
+
+    <ParamField path="signer" type="&impl Signer" required>
+      The signer for the credential
+    </ParamField>
+
+    <ParamField path="credential_with_key" type="CredentialWithKey" required>
+      The credential and signature key
+    </ParamField>
+  </Expandable>
+</ResponseField>
+
+## KeyPackageBundle
+
+A key package together with its private keys. This is what clients store locally.
+
+<ParamField path="KeyPackageBundle" type="struct">
+  Complete key package with private keys
+
+  <Expandable title="Fields">
+    <ResponseField name="key_package" type="KeyPackage">
+      The public key package
+    </ResponseField>
+
+    <ResponseField name="private_init_key" type="HpkePrivateKey">
+      The private HPKE init key
+    </ResponseField>
+
+    <ResponseField name="private_encryption_key" type="EncryptionPrivateKey">
+      The private encryption key for the leaf node
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+<ResponseField name="key_package" type="fn(&self) -> &KeyPackage">
+  Returns a reference to the public key package
+
+  ```rust
+  pub fn key_package(&self) -> &KeyPackage
+  ```
+</ResponseField>
+
+<ResponseField name="init_private_key" type="fn(&self) -> &HpkePrivateKey">
+  Returns a reference to the private init key
+
+  ```rust
+  pub fn init_private_key(&self) -> &HpkePrivateKey
+  ```
+</ResponseField>
+
+## InitKey
+
+The HPKE init key used for key agreement.
+
+<ParamField path="InitKey" type="struct">
+  HPKE public init key
+
+  <Expandable title="Fields">
+    <ResponseField name="key" type="HpkePublicKey">
+      The HPKE public key bytes
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+<ResponseField name="key" type="fn(&self) -> &HpkePublicKey">
+  Returns the internal HPKE public key
+
+  ```rust
+  pub fn key(&self) -> &HpkePublicKey
+  ```
+</ResponseField>
+
+<ResponseField name="as_slice" type="fn(&self) -> &[u8]">
+  Returns the key as a byte slice
+
+  ```rust
+  pub fn as_slice(&self) -> &[u8]
+  ```
+</ResponseField>
+
+## Lifetime
+
+Specifies the validity period of a key package.
+
+<ParamField path="Lifetime" type="struct">
+  Key package validity period
+
+  <Expandable title="Fields">
+    <ResponseField name="not_before" type="u64">
+      Timestamp before which the key package is not valid (seconds since Unix epoch)
+    </ResponseField>
+
+    <ResponseField name="not_after" type="u64">
+      Timestamp after which the key package is not valid (seconds since Unix epoch)
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+## KeyPackageIn
+
+A deserialized but unverified key package. Must be validated before use.
+
+<ParamField path="KeyPackageIn" type="struct">
+  Unverified key package from the wire
+</ParamField>
+
+### Methods
+
+<ResponseField name="validate" type="fn(self, &impl OpenMlsCrypto, ProtocolVersion) -> Result<KeyPackage, KeyPackageVerifyError>">
+  Validates the key package and returns a verified KeyPackage
+
+  ```rust
+  pub fn validate(
+      self,
+      crypto: &impl OpenMlsCrypto,
+      protocol_version: ProtocolVersion,
+  ) -> Result<KeyPackage, KeyPackageVerifyError>
+  ```
+</ResponseField>
+
+## Errors
+
+### KeyPackageNewError
+
+<ResponseField name="KeyPackageNewError" type="enum">
+  Errors when creating key packages
+
+  <Expandable title="Variants">
+    <ResponseField name="LibraryError">
+      A library error occurred
+    </ResponseField>
+
+    <ResponseField name="CiphersuiteSignatureSchemeMismatch">
+      The ciphersuite doesn't match the signature scheme
+    </ResponseField>
+
+    <ResponseField name="StorageError">
+      Failed to access storage
+    </ResponseField>
+
+    <ResponseField name="SignatureError">
+      Signature generation failed
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### KeyPackageVerifyError
+
+<ResponseField name="KeyPackageVerifyError" type="enum">
+  Errors when verifying key packages
+
+  <Expandable title="Variants">
+    <ResponseField name="LibraryError">
+      A library error occurred
+    </ResponseField>
+
+    <ResponseField name="InvalidLifetime">
+      The lifetime is not valid
+    </ResponseField>
+
+    <ResponseField name="MissingLifetime">
+      The lifetime is missing
+    </ResponseField>
+
+    <ResponseField name="UnsupportedExtension">
+      An extension is not supported in the leaf's capabilities
+    </ResponseField>
+
+    <ResponseField name="InvalidSignature">
+      The key package signature is invalid
+    </ResponseField>
+
+    <ResponseField name="InvalidLeafNodeSignature">
+      The leaf node signature is invalid
+    </ResponseField>
+
+    <ResponseField name="InvalidLeafNodeSourceType">
+      Invalid LeafNode source type
+    </ResponseField>
+
+    <ResponseField name="InitKeyEqualsEncryptionKey">
+      The init key and encryption key are equal (forbidden)
+    </ResponseField>
+
+    <ResponseField name="InvalidProtocolVersion">
+      The protocol version is not valid
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### KeyPackageExtensionSupportError
+
+<ResponseField name="KeyPackageExtensionSupportError" type="enum">
+  Errors when checking extension support
+
+  <Expandable title="Variants">
+    <ResponseField name="UnsupportedExtension">
+      The key package doesn't support all required extensions
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Usage Examples
+
+### Creating a Basic Key Package
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use openmls_basic_credential::SignatureKeyPair;
+
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+let provider = OpenMlsRustCrypto::default();
+
+// Create credential
+let credential = BasicCredential::new(b"alice@example.com".to_vec());
+let signer = SignatureKeyPair::new(ciphersuite.signature_algorithm())
+    .expect("Error generating signature key pair");
+
+let credential_with_key = CredentialWithKey {
+    credential: credential.into(),
+    signature_key: signer.public().into(),
+};
+
+// Build key package
+let key_package_bundle = KeyPackage::builder()
+    .build(ciphersuite, &provider, &signer, credential_with_key)
+    .unwrap();
+
+let key_package = key_package_bundle.key_package();
+```
+
+### Creating a Last-Resort Key Package
+
+```rust
+use openmls::prelude::*;
+
+let key_package_bundle = KeyPackage::builder()
+    .mark_as_last_resort()
+    .build(ciphersuite, &provider, &signer, credential_with_key)
+    .unwrap();
+
+assert!(key_package_bundle.key_package().last_resort());
+```
+
+### Setting Custom Lifetime
+
+```rust
+use openmls::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
+
+let now = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap()
+    .as_secs();
+
+let lifetime = Lifetime {
+    not_before: now,
+    not_after: now + 86400 * 30, // 30 days
+};
+
+let key_package_bundle = KeyPackage::builder()
+    .key_package_lifetime(lifetime)
+    .build(ciphersuite, &provider, &signer, credential_with_key)
+    .unwrap();
+```
+
+### Loading and Validating a Key Package
+
+```rust
+use openmls::prelude::*;
+use tls_codec::*;
+
+let provider = OpenMlsRustCrypto::default();
+
+// Deserialize from bytes
+let key_package_in = KeyPackageIn::tls_deserialize(&mut bytes.as_slice())
+    .expect("Could not deserialize KeyPackage");
+
+// Validate
+let key_package = key_package_in
+    .validate(provider.crypto(), ProtocolVersion::Mls10)
+    .expect("Invalid KeyPackage");
+
+// Compute hash reference for storage/lookup
+let key_package_ref = key_package.hash_ref(provider.crypto())
+    .expect("Failed to compute hash reference");
+```
+
+### Adding Custom Extensions
+
+```rust
+use openmls::prelude::*;
+
+let extensions = Extensions::single(
+    Extension::ApplicationId(ApplicationIdExtension::new(b"my-app"))
+).unwrap();
+
+let key_package_bundle = KeyPackage::builder()
+    .key_package_extensions(extensions)
+    .build(ciphersuite, &provider, &signer, credential_with_key)
+    .unwrap();
+```
+
+## Best Practices
+
+<Note>
+  - Generate a new key package for each group join operation
+  - Store KeyPackageBundle securely with its private keys
+  - Validate received key packages before using them
+  - Set appropriate lifetimes to enable key rotation
+  - Use the last-resort extension sparingly for backup key packages
+  - Verify that init keys are unique across your key packages
+</Note>

@@ -1,0 +1,248 @@
+---
+title: Sending messages
+description: Create and send encrypted application messages in OpenMLS
+---
+
+Application messages allow you to send encrypted content to all members of an MLS group. OpenMLS ensures forward secrecy by immediately discarding encryption keys after use.
+
+## Creating application messages
+
+Application messages are created from byte slices using the `create_message()` function:
+
+```rust
+use openmls::prelude::*;
+
+let message = b"Hello, group!";
+
+let mls_message = alice_group.create_message(
+    provider,
+    &alice_signature_keys,
+    message,
+)?;
+
+// Send to the delivery service
+delivery_service.send_to_members(mls_message)?;
+```
+
+The function returns an `MlsMessageOut` containing the encrypted message ready to be sent to the delivery service for fanout to other group members.
+
+## Message size limits
+
+<Note>
+The theoretical maximum length of application messages is 2^32 bytes. However, messages should be much shorter in practice unless your delivery service can handle very long messages.
+</Note>
+
+Most applications should keep messages under a few megabytes to ensure reliable delivery and good performance.
+
+## Forward secrecy
+
+OpenMLS provides strong forward secrecy guarantees:
+
+```rust
+let message = b"Sensitive data";
+
+let encrypted_message = alice_group.create_message(
+    provider,
+    &alice_signature_keys,
+    message,
+)?;
+
+// Key material is immediately discarded after encryption
+// The sender cannot decrypt this message
+```
+
+<Warning>
+To guarantee the best possible forward secrecy, the key material used to encrypt messages is immediately discarded after encryption. This means **the message author cannot decrypt application messages they send**.
+
+If you need access to the message content after sending, keep a copy of the plaintext message in your application.
+</Warning>
+
+## Working with authenticated data
+
+You can set authenticated additional data (AAD) on messages:
+
+```rust
+use openmls::prelude::*;
+
+// Set AAD for the next operation
+alice_group.set_aad(b"message-id-12345");
+
+let mls_message = alice_group.create_message(
+    provider,
+    &alice_signature_keys,
+    b"Hello",
+)?;
+
+// AAD is automatically reset after the operation
+```
+
+The AAD is included in the message's signature but not encrypted, allowing receivers to verify the authenticated data.
+
+<Note>
+AAD is automatically reset after each operation that creates a message. You must set it again if you want to include AAD in subsequent messages.
+</Note>
+
+## Error handling
+
+The `create_message()` function can fail in several scenarios:
+
+```rust
+use openmls::prelude::*;
+
+let result = alice_group.create_message(
+    provider,
+    &alice_signature_keys,
+    message,
+);
+
+match result {
+    Ok(mls_message) => {
+        // Send to delivery service
+    }
+    Err(CreateMessageError::GroupStateError(MlsGroupStateError::UseAfterEviction)) => {
+        // We are no longer part of the group
+        println!("Cannot send message: removed from group");
+    }
+    Err(CreateMessageError::GroupStateError(MlsGroupStateError::PendingProposal)) => {
+        // Must process pending proposals first
+        println!("Cannot send message: pending proposals exist");
+        
+        // Either commit to proposals or process incoming messages
+        alice_group.commit_to_pending_proposals(provider, &alice_signature_keys)?;
+    }
+    Err(e) => {
+        println!("Error creating message: {:?}", e);
+    }
+}
+```
+
+### Common error conditions
+
+<Warning>
+**UseAfterEviction**: The member is no longer part of the group. This happens after being removed and merging the removal commit.
+
+**PendingProposal**: Pending proposals exist in the proposal store. Call `commit_to_pending_proposals()` first, or process incoming messages from the delivery service.
+</Warning>
+
+## Best practices
+
+<Steps>
+
+### Check group state
+
+Before sending messages, verify the group is active:
+
+```rust
+if !alice_group.is_active() {
+    return Err("Group is not active");
+}
+```
+
+### Handle pending proposals
+
+Process or commit to pending proposals before sending:
+
+```rust
+if alice_group.has_pending_proposals() {
+    // Option 1: Commit to pending proposals
+    let (commit, welcome, group_info) = alice_group.commit_to_pending_proposals(
+        provider,
+        &alice_signature_keys,
+    )?;
+    
+    // Option 2: Wait for incoming messages from DS
+    // process_incoming_messages();
+}
+```
+
+### Preserve message content
+
+Keep a copy of plaintext if you need it later:
+
+```rust
+let plaintext_message = b"Important message".to_vec();
+
+let encrypted_message = alice_group.create_message(
+    provider,
+    &alice_signature_keys,
+    &plaintext_message,
+)?;
+
+// Store plaintext_message in your application database
+app_db.store_sent_message(&plaintext_message)?;
+```
+
+### Handle delivery failures
+
+Implement retry logic for delivery failures:
+
+```rust
+let mls_message = alice_group.create_message(
+    provider,
+    &alice_signature_keys,
+    message,
+)?;
+
+// Serialize for storage/retry
+let serialized = mls_message.tls_serialize_detached()?;
+
+retry_with_backoff(|| {
+    delivery_service.send(&serialized)
+})?;
+```
+
+</Steps>
+
+## Message ordering and epochs
+
+Messages are encrypted with epoch-specific key material:
+
+```rust
+// Message encrypted in epoch 5
+let msg1 = alice_group.create_message(provider, signer, b"Message 1")?;
+
+// Group advances to epoch 6
+alice_group.commit_to_pending_proposals(provider, signer)?;
+
+// Message encrypted in epoch 6 - different keys
+let msg2 = alice_group.create_message(provider, signer, b"Message 2")?;
+```
+
+<Note>
+Receivers must be in the correct epoch to decrypt messages. Ensure commits are accepted by the delivery service before sending application messages in the new epoch.
+</Note>
+
+## Wire format and encryption
+
+Application messages are always encrypted regardless of the group's wire format policy:
+
+```rust
+// Even with plaintext handshake policy,
+// application messages are always encrypted
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .build();
+
+let alice_group = MlsGroup::new(provider, signer, &config, credential)?;
+
+// This message is still encrypted!
+let message = alice_group.create_message(provider, signer, b"Secret")?;
+```
+
+## Related types
+
+- `MlsGroup::create_message()` - Creates an encrypted application message
+- `MlsGroup::set_aad()` - Sets authenticated additional data
+- `MlsMessageOut` - Outgoing MLS message wrapper
+- `CreateMessageError` - Errors that can occur when creating messages
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Processing messages" href="./processing-messages">
+    Learn how to receive and decrypt messages
+  </Card>
+  <Card title="Key updates" href="./key-updates">
+    Update your encryption keys for forward secrecy
+  </Card>
+</CardGroup>

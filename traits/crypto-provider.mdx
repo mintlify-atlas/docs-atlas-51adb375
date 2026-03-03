@@ -1,0 +1,385 @@
+---
+title: Crypto provider
+description: Implementing the OpenMlsCrypto trait for cryptographic operations
+---
+
+The `OpenMlsCrypto` trait defines all cryptographic functions required by OpenMLS. This includes HKDF, hashing, AEAD encryption/decryption, signatures, and HPKE operations.
+
+<Warning>
+The crypto provider is responsible for all cryptographic operations within OpenMLS. Implementing your own version requires tremendous care and cryptographic expertise. For most use cases, use the provided [Rust Crypto](https://crates.io/crates/openmls_rust_crypto) or [Libcrux Crypto](https://crates.io/crates/openmls_libcrux_crypto) implementations.
+</Warning>
+
+## Trait definition
+
+The `OpenMlsCrypto` trait is defined in `openmls_traits/src/crypto.rs`:
+
+```rust
+pub trait OpenMlsCrypto: Send + Sync {
+    // Ciphersuite support
+    fn supports(&self, ciphersuite: Ciphersuite) -> Result<(), CryptoError>;
+    fn supported_ciphersuites(&self) -> Vec<Ciphersuite>;
+
+    // HKDF operations
+    fn hkdf_extract(
+        &self,
+        hash_type: HashType,
+        salt: &[u8],
+        ikm: &[u8],
+    ) -> Result<SecretVLBytes, CryptoError>;
+
+    fn hkdf_expand(
+        &self,
+        hash_type: HashType,
+        prk: &[u8],
+        info: &[u8],
+        okm_len: usize,
+    ) -> Result<SecretVLBytes, CryptoError>;
+
+    fn hmac(
+        &self,
+        hash_type: HashType,
+        key: &[u8],
+        message: &[u8],
+    ) -> Result<SecretVLBytes, CryptoError>;
+
+    // Hashing
+    fn hash(&self, hash_type: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError>;
+
+    // AEAD operations
+    fn aead_encrypt(
+        &self,
+        alg: AeadType,
+        key: &[u8],
+        data: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+
+    fn aead_decrypt(
+        &self,
+        alg: AeadType,
+        key: &[u8],
+        ct_tag: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+
+    // Signature operations
+    fn signature_key_gen(&self, alg: SignatureScheme) -> Result<(Vec<u8>, Vec<u8>), CryptoError>;
+
+    fn verify_signature(
+        &self,
+        alg: SignatureScheme,
+        data: &[u8],
+        pk: &[u8],
+        signature: &[u8],
+    ) -> Result<(), CryptoError>;
+
+    fn sign(&self, alg: SignatureScheme, data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoError>;
+
+    // HPKE operations
+    fn hpke_seal(
+        &self,
+        config: HpkeConfig,
+        pk_r: &[u8],
+        info: &[u8],
+        aad: &[u8],
+        ptxt: &[u8],
+    ) -> Result<HpkeCiphertext, CryptoError>;
+
+    fn hpke_open(
+        &self,
+        config: HpkeConfig,
+        input: &HpkeCiphertext,
+        sk_r: &[u8],
+        info: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+
+    fn hpke_setup_sender_and_export(
+        &self,
+        config: HpkeConfig,
+        pk_r: &[u8],
+        info: &[u8],
+        exporter_context: &[u8],
+        exporter_length: usize,
+    ) -> Result<(KemOutput, ExporterSecret), CryptoError>;
+
+    fn hpke_setup_receiver_and_export(
+        &self,
+        config: HpkeConfig,
+        enc: &[u8],
+        sk_r: &[u8],
+        info: &[u8],
+        exporter_context: &[u8],
+        exporter_length: usize,
+    ) -> Result<ExporterSecret, CryptoError>;
+
+    fn derive_hpke_keypair(
+        &self,
+        config: HpkeConfig,
+        ikm: &[u8],
+    ) -> Result<HpkeKeyPair, CryptoError>;
+}
+```
+
+## Required cryptographic operations
+
+The crypto provider must implement the following categories of operations:
+
+### HKDF (HMAC-based Key Derivation Function)
+
+<CodeGroup>
+```rust HKDF Extract
+fn hkdf_extract(
+    &self,
+    hash_type: HashType,
+    salt: &[u8],
+    ikm: &[u8],
+) -> Result<SecretVLBytes, CryptoError>;
+```
+
+```rust HKDF Expand
+fn hkdf_expand(
+    &self,
+    hash_type: HashType,
+    prk: &[u8],
+    info: &[u8],
+    okm_len: usize,
+) -> Result<SecretVLBytes, CryptoError>;
+```
+</CodeGroup>
+
+These methods perform HKDF extract and expand operations for key derivation. The `hash_type` parameter specifies which hash function to use (SHA-256, SHA-384, or SHA-512).
+
+### Hashing
+
+```rust
+fn hash(&self, hash_type: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError>;
+```
+
+Computes a cryptographic hash of the input data using the specified hash algorithm.
+
+### AEAD (Authenticated Encryption with Associated Data)
+
+<CodeGroup>
+```rust Encrypt
+fn aead_encrypt(
+    &self,
+    alg: AeadType,
+    key: &[u8],
+    data: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError>;
+```
+
+```rust Decrypt
+fn aead_decrypt(
+    &self,
+    alg: AeadType,
+    key: &[u8],
+    ct_tag: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError>;
+```
+</CodeGroup>
+
+These methods handle authenticated encryption and decryption. Supported AEAD algorithms include AES-128-GCM, AES-256-GCM, and ChaCha20-Poly1305.
+
+### Signatures
+
+<CodeGroup>
+```rust Key generation
+fn signature_key_gen(&self, alg: SignatureScheme) -> Result<(Vec<u8>, Vec<u8>), CryptoError>;
+```
+
+```rust Sign
+fn sign(&self, alg: SignatureScheme, data: &[u8], key: &[u8]) -> Result<Vec<u8>, CryptoError>;
+```
+
+```rust Verify
+fn verify_signature(
+    &self,
+    alg: SignatureScheme,
+    data: &[u8],
+    pk: &[u8],
+    signature: &[u8],
+) -> Result<(), CryptoError>;
+```
+</CodeGroup>
+
+Signature operations support Ed25519 and ECDSA with P-256 curves.
+
+### HPKE (Hybrid Public Key Encryption)
+
+<CodeGroup>
+```rust Seal
+fn hpke_seal(
+    &self,
+    config: HpkeConfig,
+    pk_r: &[u8],
+    info: &[u8],
+    aad: &[u8],
+    ptxt: &[u8],
+) -> Result<HpkeCiphertext, CryptoError>;
+```
+
+```rust Open
+fn hpke_open(
+    &self,
+    config: HpkeConfig,
+    input: &HpkeCiphertext,
+    sk_r: &[u8],
+    info: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError>;
+```
+
+```rust Derive keypair
+fn derive_hpke_keypair(
+    &self,
+    config: HpkeConfig,
+    ikm: &[u8],
+) -> Result<HpkeKeyPair, CryptoError>;
+```
+</CodeGroup>
+
+HPKE is used for encrypting messages to public keys in the MLS protocol.
+
+## Example implementation
+
+Here's a simplified example showing the structure of a crypto provider implementation from the Rust Crypto provider:
+
+```rust
+use openmls_traits::crypto::OpenMlsCrypto;
+use openmls_traits::types::*;
+use std::sync::RwLock;
+
+#[derive(Debug)]
+pub struct RustCrypto {
+    rng: RwLock<rand_chacha::ChaCha20Rng>,
+}
+
+impl Default for RustCrypto {
+    fn default() -> Self {
+        Self {
+            rng: RwLock::new(rand_chacha::ChaCha20Rng::from_entropy()),
+        }
+    }
+}
+
+impl OpenMlsCrypto for RustCrypto {
+    fn supports(&self, ciphersuite: Ciphersuite) -> Result<(), CryptoError> {
+        match ciphersuite {
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+            | Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519
+            | Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256 => Ok(()),
+            _ => Err(CryptoError::UnsupportedCiphersuite),
+        }
+    }
+
+    fn supported_ciphersuites(&self) -> Vec<Ciphersuite> {
+        vec![
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+            Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+            Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+        ]
+    }
+
+    fn hash(&self, hash_type: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        match hash_type {
+            HashType::Sha2_256 => Ok(Sha256::digest(data).as_slice().into()),
+            HashType::Sha2_384 => Ok(Sha384::digest(data).as_slice().into()),
+            HashType::Sha2_512 => Ok(Sha512::digest(data).as_slice().into()),
+        }
+    }
+
+    // ... other method implementations
+}
+```
+
+## Error handling
+
+The `CryptoError` enum provides specific error types for different failure scenarios:
+
+```rust
+pub enum CryptoError {
+    UnsupportedCiphersuite,
+    HkdfOutputLengthInvalid,
+    InvalidLength,
+    CryptoLibraryError,
+    AeadDecryptionError,
+    InvalidSignature,
+    UnsupportedSignatureScheme,
+    HpkeDecryptionError,
+    SenderSetupError,
+    ReceiverSetupError,
+    ExporterError,
+}
+```
+
+Ensure your implementation returns appropriate errors for different failure conditions.
+
+## Thread safety requirements
+
+The trait requires `Send + Sync` bounds:
+
+```rust
+pub trait OpenMlsCrypto: Send + Sync { ... }
+```
+
+Your implementation must be thread-safe. Use appropriate synchronization primitives (like `RwLock` or `Mutex`) for any mutable state.
+
+## Testing your implementation
+
+When implementing a custom crypto provider:
+
+1. **Test against known vectors**: Use test vectors from the MLS specification
+2. **Test all ciphersuites**: Ensure all supported ciphersuites work correctly
+3. **Test error cases**: Verify proper error handling for invalid inputs
+4. **Test thread safety**: Verify concurrent access works correctly
+
+<Tip>
+The OpenMLS repository includes comprehensive test suites that can be adapted to test your custom crypto provider implementation.
+</Tip>
+
+## Using the crypto provider
+
+Once implemented, use your crypto provider as part of an `OpenMlsProvider`:
+
+```rust
+use openmls_traits::OpenMlsProvider;
+
+struct MyProvider {
+    crypto: MyCryptoProvider,
+    // ... other providers
+}
+
+impl OpenMlsProvider for MyProvider {
+    type CryptoProvider = MyCryptoProvider;
+    // ...
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+}
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Random provider" icon="dice" href="/traits/random-provider">
+    Learn about the random number generation trait
+  </Card>
+  <Card title="Storage provider" icon="database" href="/traits/storage-provider">
+    Learn about the storage provider trait
+  </Card>
+  <Card title="Custom implementation" icon="code" href="/traits/custom-implementation">
+    Complete guide to implementing custom providers
+  </Card>
+  <Card title="Overview" icon="book" href="/traits/overview">
+    Back to provider traits overview
+  </Card>
+</CardGroup>

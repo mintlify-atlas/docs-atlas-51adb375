@@ -1,0 +1,535 @@
+---
+title: Custom Storage
+description: Implement custom storage providers for OpenMLS
+---
+
+You can implement your own storage provider by implementing the `StorageProvider` trait. This allows you to integrate OpenMLS with any database or storage backend.
+
+## Overview
+
+The `StorageProvider` trait defines all storage operations required by OpenMLS. By implementing this trait, you can use MongoDB, PostgreSQL, Redis, cloud storage, or any other backend.
+
+## Storage Provider Trait
+
+The trait is defined in `openmls_traits::storage`:
+
+```rust
+use openmls_traits::storage::{StorageProvider, CURRENT_VERSION};
+
+pub trait StorageProvider<const VERSION: u16> {
+    type Error: std::error::Error;
+
+    // Key package operations
+    fn write_key_package<...>(&self, hash_ref: &HashRef, kp: &KeyPackage) -> Result<(), Self::Error>;
+    fn key_package<...>(&self, hash_ref: &HashRef) -> Result<Option<KeyPackage>, Self::Error>;
+    fn delete_key_package<...>(&self, hash_ref: &HashRef) -> Result<(), Self::Error>;
+
+    // Group state operations
+    fn write_group_state<...>(&self, group_id: &GroupId, state: &GroupState) -> Result<(), Self::Error>;
+    fn group_state<...>(&self, group_id: &GroupId) -> Result<Option<GroupState>, Self::Error>;
+    fn delete_group_state<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Proposal operations
+    fn queue_proposal<...>(&self, group_id: &GroupId, ref: &ProposalRef, proposal: &QueuedProposal) -> Result<(), Self::Error>;
+    fn queued_proposal_refs<...>(&self, group_id: &GroupId) -> Result<Vec<ProposalRef>, Self::Error>;
+    fn queued_proposals<...>(&self, group_id: &GroupId) -> Result<Vec<(ProposalRef, QueuedProposal)>, Self::Error>;
+    fn remove_proposal<...>(&self, group_id: &GroupId, ref: &ProposalRef) -> Result<(), Self::Error>;
+    fn clear_proposal_queue<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Tree operations
+    fn write_tree<...>(&self, group_id: &GroupId, tree: &TreeSync) -> Result<(), Self::Error>;
+    fn tree<...>(&self, group_id: &GroupId) -> Result<Option<TreeSync>, Self::Error>;
+    fn delete_tree<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Context operations
+    fn write_context<...>(&self, group_id: &GroupId, context: &GroupContext) -> Result<(), Self::Error>;
+    fn group_context<...>(&self, group_id: &GroupId) -> Result<Option<GroupContext>, Self::Error>;
+    fn delete_context<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Transcript hash operations
+    fn write_interim_transcript_hash<...>(&self, group_id: &GroupId, hash: &InterimTranscriptHash) -> Result<(), Self::Error>;
+    fn interim_transcript_hash<...>(&self, group_id: &GroupId) -> Result<Option<InterimTranscriptHash>, Self::Error>;
+    fn delete_interim_transcript_hash<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Confirmation tag operations
+    fn write_confirmation_tag<...>(&self, group_id: &GroupId, tag: &ConfirmationTag) -> Result<(), Self::Error>;
+    fn confirmation_tag<...>(&self, group_id: &GroupId) -> Result<Option<ConfirmationTag>, Self::Error>;
+    fn delete_confirmation_tag<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Signature key operations
+    fn write_signature_key_pair<...>(&self, public_key: &SignaturePublicKey, kp: &SignatureKeyPair) -> Result<(), Self::Error>;
+    fn signature_key_pair<...>(&self, public_key: &SignaturePublicKey) -> Result<Option<SignatureKeyPair>, Self::Error>;
+    fn delete_signature_key_pair<...>(&self, public_key: &SignaturePublicKey) -> Result<(), Self::Error>;
+
+    // Encryption key operations
+    fn write_encryption_key_pair<...>(&self, public_key: &EncryptionKey, kp: &HpkeKeyPair) -> Result<(), Self::Error>;
+    fn encryption_key_pair<...>(&self, public_key: &EncryptionKey) -> Result<Option<HpkeKeyPair>, Self::Error>;
+    fn delete_encryption_key_pair<...>(&self, public_key: &EncryptionKey) -> Result<(), Self::Error>;
+
+    // Epoch key operations
+    fn write_encryption_epoch_key_pairs<...>(&self, group_id: &GroupId, epoch: &EpochKey, leaf_index: u32, kps: &[HpkeKeyPair]) -> Result<(), Self::Error>;
+    fn encryption_epoch_key_pairs<...>(&self, group_id: &GroupId, epoch: &EpochKey, leaf_index: u32) -> Result<Vec<HpkeKeyPair>, Self::Error>;
+    fn delete_encryption_epoch_key_pairs<...>(&self, group_id: &GroupId, epoch: &EpochKey, leaf_index: u32) -> Result<(), Self::Error>;
+
+    // PSK operations
+    fn write_psk<...>(&self, psk_id: &PskId, psk: &PskBundle) -> Result<(), Self::Error>;
+    fn psk<...>(&self, psk_id: &PskId) -> Result<Option<PskBundle>, Self::Error>;
+    fn delete_psk<...>(&self, psk_id: &PskId) -> Result<(), Self::Error>;
+
+    // Message secrets operations
+    fn write_message_secrets<...>(&self, group_id: &GroupId, secrets: &MessageSecrets) -> Result<(), Self::Error>;
+    fn message_secrets<...>(&self, group_id: &GroupId) -> Result<Option<MessageSecrets>, Self::Error>;
+    fn delete_message_secrets<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Resumption PSK operations
+    fn write_resumption_psk_store<...>(&self, group_id: &GroupId, store: &ResumptionPskStore) -> Result<(), Self::Error>;
+    fn resumption_psk_store<...>(&self, group_id: &GroupId) -> Result<Option<ResumptionPskStore>, Self::Error>;
+    fn delete_all_resumption_psk_secrets<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Leaf index operations
+    fn write_own_leaf_index<...>(&self, group_id: &GroupId, index: &LeafNodeIndex) -> Result<(), Self::Error>;
+    fn own_leaf_index<...>(&self, group_id: &GroupId) -> Result<Option<LeafNodeIndex>, Self::Error>;
+    fn delete_own_leaf_index<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Leaf node operations
+    fn append_own_leaf_node<...>(&self, group_id: &GroupId, leaf: &LeafNode) -> Result<(), Self::Error>;
+    fn own_leaf_nodes<...>(&self, group_id: &GroupId) -> Result<Vec<LeafNode>, Self::Error>;
+    fn delete_own_leaf_nodes<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Group epoch secrets operations
+    fn write_group_epoch_secrets<...>(&self, group_id: &GroupId, secrets: &GroupEpochSecrets) -> Result<(), Self::Error>;
+    fn group_epoch_secrets<...>(&self, group_id: &GroupId) -> Result<Option<GroupEpochSecrets>, Self::Error>;
+    fn delete_group_epoch_secrets<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+
+    // Join config operations
+    fn write_mls_join_config<...>(&self, group_id: &GroupId, config: &MlsGroupJoinConfig) -> Result<(), Self::Error>;
+    fn mls_group_join_config<...>(&self, group_id: &GroupId) -> Result<Option<MlsGroupJoinConfig>, Self::Error>;
+    fn delete_group_config<...>(&self, group_id: &GroupId) -> Result<(), Self::Error>;
+}
+```
+
+## Implementing a Custom Storage Provider
+
+### Step 1: Define Your Storage Type
+
+```rust
+use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+
+pub struct MyCustomStorage {
+    // Your storage implementation
+    data: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+}
+
+impl MyCustomStorage {
+    pub fn new() -> Self {
+        Self {
+            data: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+```
+
+### Step 2: Define Error Type
+
+```rust
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum MyStorageError {
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    
+    #[error("Storage error: {0}")]
+    Storage(String),
+    
+    #[error("Not found")]
+    NotFound,
+}
+```
+
+### Step 3: Implement StorageProvider
+
+```rust
+use openmls_traits::storage::{StorageProvider, CURRENT_VERSION, traits};
+use serde::{Serialize, de::DeserializeOwned};
+
+impl StorageProvider<CURRENT_VERSION> for MyCustomStorage {
+    type Error = MyStorageError;
+
+    fn write_key_package<
+        HashReference: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &HashReference,
+        key_package: &KeyPackage,
+    ) -> Result<(), Self::Error> {
+        let key = format!("key_package:{}", serialize_key(hash_ref)?);
+        let value = serde_json::to_vec(key_package)?;
+        
+        let mut data = self.data.write().unwrap();
+        data.insert(key, value);
+        
+        Ok(())
+    }
+
+    fn key_package<
+        KeyPackageRef: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<Option<KeyPackage>, Self::Error> {
+        let key = format!("key_package:{}", serialize_key(hash_ref)?);
+        
+        let data = self.data.read().unwrap();
+        match data.get(&key) {
+            Some(bytes) => {
+                let kp = serde_json::from_slice(bytes)?;
+                Ok(Some(kp))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn delete_key_package<
+        KeyPackageRef: traits::HashReference<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<(), Self::Error> {
+        let key = format!("key_package:{}", serialize_key(hash_ref)?);
+        
+        let mut data = self.data.write().unwrap();
+        data.remove(&key);
+        
+        Ok(())
+    }
+
+    // Implement all other required methods...
+    // See the full trait definition for all required methods
+}
+
+// Helper function to serialize keys
+fn serialize_key<T: Serialize>(key: &T) -> Result<String, serde_json::Error> {
+    let bytes = serde_json::to_vec(key)?;
+    Ok(hex::encode(bytes))
+}
+```
+
+## Entity and Key Traits
+
+Types used in storage must implement `Entity` and/or `Key` traits:
+
+### Entity Trait
+
+Represents values that can be stored:
+
+```rust
+use openmls_traits::storage::{Entity, CURRENT_VERSION};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct MyEntity {
+    data: Vec<u8>,
+}
+
+impl Entity<CURRENT_VERSION> for MyEntity {}
+```
+
+### Key Trait
+
+Represents keys used for lookups:
+
+```rust
+use openmls_traits::storage::{Key, CURRENT_VERSION};
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Hash, Eq, PartialEq)]
+struct MyKey {
+    id: Vec<u8>,
+}
+
+impl Key<CURRENT_VERSION> for MyKey {}
+```
+
+## Example: PostgreSQL Storage
+
+Here's a simplified PostgreSQL storage implementation:
+
+```rust
+use tokio_postgres::{Client, Error as PgError};
+use openmls_traits::storage::{StorageProvider, CURRENT_VERSION, traits};
+
+pub struct PostgresStorage {
+    client: Client,
+}
+
+impl PostgresStorage {
+    pub fn new(client: Client) -> Self {
+        Self { client }
+    }
+
+    async fn init_schema(&self) -> Result<(), PgError> {
+        self.client.batch_execute("
+            CREATE TABLE IF NOT EXISTS key_packages (
+                hash_ref BYTEA PRIMARY KEY,
+                data BYTEA NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_data (
+                group_id BYTEA PRIMARY KEY,
+                state_data BYTEA,
+                tree_data BYTEA,
+                context_data BYTEA
+            );
+            -- Add more tables as needed
+        ").await?;
+        Ok(())
+    }
+}
+
+impl StorageProvider<CURRENT_VERSION> for PostgresStorage {
+    type Error = PgError;
+
+    fn write_key_package<
+        HashReference: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &HashReference,
+        key_package: &KeyPackage,
+    ) -> Result<(), Self::Error> {
+        let key_bytes = serde_json::to_vec(hash_ref)
+            .map_err(|e| PgError::TODO)?;
+        let value_bytes = serde_json::to_vec(key_package)
+            .map_err(|e| PgError::TODO)?;
+
+        // Use blocking or async based on your needs
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(async {
+                self.client
+                    .execute(
+                        "INSERT INTO key_packages (hash_ref, data) VALUES ($1, $2) \
+                         ON CONFLICT (hash_ref) DO UPDATE SET data = $2",
+                        &[&key_bytes, &value_bytes],
+                    )
+                    .await
+            })?;
+
+        Ok(())
+    }
+
+    // Implement other methods...
+}
+```
+
+## Example: Redis Storage
+
+```rust
+use redis::{Client, Commands, RedisError};
+use openmls_traits::storage::{StorageProvider, CURRENT_VERSION, traits};
+
+pub struct RedisStorage {
+    client: Client,
+}
+
+impl RedisStorage {
+    pub fn new(url: &str) -> Result<Self, RedisError> {
+        let client = Client::open(url)?;
+        Ok(Self { client })
+    }
+}
+
+impl StorageProvider<CURRENT_VERSION> for RedisStorage {
+    type Error = RedisError;
+
+    fn write_key_package<
+        HashReference: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &HashReference,
+        key_package: &KeyPackage,
+    ) -> Result<(), Self::Error> {
+        let mut conn = self.client.get_connection()?;
+        
+        let key = format!(
+            "openmls:key_package:{}",
+            hex::encode(serde_json::to_vec(hash_ref).unwrap())
+        );
+        let value = serde_json::to_vec(key_package).unwrap();
+        
+        conn.set(key, value)?;
+        Ok(())
+    }
+
+    fn key_package<
+        KeyPackageRef: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<Option<KeyPackage>, Self::Error> {
+        let mut conn = self.client.get_connection()?;
+        
+        let key = format!(
+            "openmls:key_package:{}",
+            hex::encode(serde_json::to_vec(hash_ref).unwrap())
+        );
+        
+        let value: Option<Vec<u8>> = conn.get(key)?;
+        match value {
+            Some(bytes) => {
+                let kp = serde_json::from_slice(&bytes).unwrap();
+                Ok(Some(kp))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn delete_key_package<
+        KeyPackageRef: traits::HashReference<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<(), Self::Error> {
+        let mut conn = self.client.get_connection()?;
+        
+        let key = format!(
+            "openmls:key_package:{}",
+            hex::encode(serde_json::to_vec(hash_ref).unwrap())
+        );
+        
+        conn.del(key)?;
+        Ok(())
+    }
+
+    // Implement other methods...
+}
+```
+
+## Testing Your Implementation
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openmls_traits::storage::StorageProvider;
+
+    #[test]
+    fn test_key_package_storage() {
+        let storage = MyCustomStorage::new();
+        
+        // Create test data
+        let hash_ref = create_test_hash_ref();
+        let key_package = create_test_key_package();
+        
+        // Write
+        storage.write_key_package(&hash_ref, &key_package).unwrap();
+        
+        // Read
+        let retrieved = storage.key_package(&hash_ref).unwrap();
+        assert_eq!(retrieved, Some(key_package));
+        
+        // Delete
+        storage.delete_key_package(&hash_ref).unwrap();
+        
+        // Verify deletion
+        let retrieved = storage.key_package(&hash_ref).unwrap();
+        assert_eq!(retrieved, None);
+    }
+}
+```
+
+## Best Practices
+
+### Serialization
+
+Use consistent serialization across all operations:
+
+```rust
+fn serialize<T: Serialize>(value: &T) -> Result<Vec<u8>, MyError> {
+    serde_json::to_vec(value).map_err(Into::into)
+}
+
+fn deserialize<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, MyError> {
+    serde_json::from_slice(bytes).map_err(Into::into)
+}
+```
+
+### Key Namespacing
+
+Prefix keys by type to avoid collisions:
+
+```rust
+fn build_key(prefix: &str, id: &impl Serialize) -> String {
+    format!("openmls:{}:{}", prefix, hex::encode(serialize(id).unwrap()))
+}
+```
+
+### Error Handling
+
+Provide clear error types:
+
+```rust
+#[derive(Error, Debug)]
+pub enum StorageError {
+    #[error("Database error: {0}")]
+    Database(String),
+    
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    
+    #[error("Item not found: {0}")]
+    NotFound(String),
+}
+```
+
+### Thread Safety
+
+Ensure your implementation is thread-safe:
+
+```rust
+use std::sync::{Arc, RwLock};
+
+pub struct ThreadSafeStorage {
+    inner: Arc<RwLock<InnerStorage>>,
+}
+
+impl Clone for ThreadSafeStorage {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+```
+
+## Storage Version
+
+Always implement for `CURRENT_VERSION`:
+
+```rust
+use openmls_traits::storage::CURRENT_VERSION;
+
+impl StorageProvider<CURRENT_VERSION> for MyStorage {
+    // Implementation
+}
+```
+
+## Required Dependencies
+
+```toml
+[dependencies]
+openmls_traits = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+```
+
+## Related
+
+- [Memory Storage](/api/storage/memory) - Reference implementation using HashMap
+- [SQLite Storage](/api/storage/sqlite) - Production-ready SQL implementation

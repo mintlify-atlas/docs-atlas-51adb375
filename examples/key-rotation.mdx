@@ -1,0 +1,386 @@
+---
+title: "Key Rotation and Updates"
+description: "Implement key rotation and group updates for forward secrecy and post-compromise security"
+---
+
+Key rotation is essential for maintaining forward secrecy and achieving post-compromise security in MLS. This example demonstrates how to update keys, commit changes, and handle group updates.
+
+## Overview
+
+MLS provides several types of updates:
+- **Update proposals**: Rotate a member's key material
+- **Commit messages**: Apply pending proposals to the group state
+- **Self updates**: A member updates their own keys
+- **External commits**: Join a group via public group info
+
+<Steps>
+
+### Set up the environment
+
+Start with the basic setup:
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use openmls_basic_credential::SignatureKeyPair;
+
+const CIPHERSUITE: Ciphersuite = 
+    Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+struct Member {
+    name: String,
+    credential_with_key: CredentialWithKey,
+    signer: SignatureKeyPair,
+    provider: OpenMlsRustCrypto,
+    group: MlsGroup,
+}
+```
+
+### Propose a key update
+
+Any group member can propose to update their own key material:
+
+```rust
+impl Member {
+    /// Propose an update to this member's key material
+    fn propose_self_update(&mut self) -> MlsMessageOut {
+        let proposal = self.group
+            .propose_self_update(
+                &self.provider,
+                &self.signer,
+                LeafNodeParameters::default(),
+            )
+            .expect("Failed to create update proposal");
+
+        println!("{} proposed a key update", self.name);
+        proposal
+    }
+}
+```
+
+### Commit pending proposals
+
+After proposals are made, they must be committed to apply the changes:
+
+```rust
+impl Member {
+    /// Commit all pending proposals in the group
+    fn commit_pending_proposals(&mut self) -> MlsMessageOut {
+        let (commit_message, welcome_option, _group_info) = self.group
+            .commit_to_pending_proposals(
+                &self.provider,
+                &self.signer,
+            )
+            .expect("Failed to commit proposals");
+
+        // Merge the commit locally
+        self.group
+            .merge_pending_commit(&self.provider)
+            .expect("Failed to merge pending commit");
+
+        println!("{} committed pending proposals", self.name);
+        commit_message
+    }
+}
+```
+
+### Self-update (propose and commit)
+
+For immediate key rotation, combine proposal and commit:
+
+```rust
+impl Member {
+    /// Update keys immediately (propose + commit in one operation)
+    fn self_update(&mut self) -> (MlsMessageOut, Option<MlsMessageOut>) {
+        let (commit_message, welcome_option, _group_info) = self.group
+            .self_update(
+                &self.provider,
+                &self.signer,
+                LeafNodeParameters::default(),
+            )
+            .expect("Failed to self-update");
+
+        // Merge the commit locally
+        self.group
+            .merge_pending_commit(&self.provider)
+            .expect("Failed to merge pending commit");
+
+        println!("{} performed self-update", self.name);
+        (commit_message, welcome_option)
+    }
+}
+```
+
+### Process update proposals
+
+Other members must process incoming proposals:
+
+```rust
+impl Member {
+    /// Process an incoming proposal message
+    fn process_proposal(&mut self, protocol_message: ProtocolMessage) {
+        let processed_message = self.group
+            .process_message(&self.provider, protocol_message)
+            .expect("Failed to process message");
+
+        match processed_message.into_content() {
+            ProcessedMessageContent::ProposalMessage(proposal) => {
+                println!(
+                    "{} received and stored proposal",
+                    self.name
+                );
+                // Proposal is automatically stored in the group's proposal store
+            }
+            _ => panic!("Expected proposal message"),
+        }
+    }
+}
+```
+
+### Process commit messages
+
+When a commit is received, members must merge the new group state:
+
+```rust
+impl Member {
+    /// Process an incoming commit message
+    fn process_commit(&mut self, protocol_message: ProtocolMessage) {
+        let processed_message = self.group
+            .process_message(&self.provider, protocol_message)
+            .expect("Failed to process message");
+
+        match processed_message.into_content() {
+            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                // Inspect the staged commit if needed
+                println!(
+                    "{} processing commit (epoch: {})",
+                    self.name,
+                    self.group.epoch()
+                );
+
+                // Merge the commit to advance the group state
+                self.group
+                    .merge_staged_commit(&self.provider, *staged_commit)
+                    .expect("Failed to merge staged commit");
+
+                println!(
+                    "{} merged commit (new epoch: {})",
+                    self.name,
+                    self.group.epoch()
+                );
+            }
+            _ => panic!("Expected staged commit message"),
+        }
+    }
+}
+```
+
+### Complete example workflow
+
+Put it all together with a full key rotation scenario:
+
+```rust
+fn main() {
+    // Create a group with two members
+    let mut alice = create_member("Alice");
+    let mut bob = create_member("Bob");
+
+    // Alice creates a group
+    alice.create_group(b"secure-chat");
+
+    // Alice invites Bob
+    let bob_kp = bob.create_key_package();
+    let (commit, welcome) = alice.invite_member(bob_kp.key_package());
+    
+    // Bob joins
+    let welcome_msg = welcome.into_welcome().unwrap();
+    let ratchet_tree = alice.group.export_ratchet_tree();
+    bob.join_group(welcome_msg, ratchet_tree);
+
+    // Bob processes Alice's commit
+    let protocol_msg = commit.try_into_protocol_message().unwrap();
+    bob.process_commit(protocol_msg);
+
+    println!("\n=== Initial group state ===");
+    println!("Alice epoch: {}", alice.group.epoch());
+    println!("Bob epoch: {}", bob.group.epoch());
+
+    // Scenario 1: Bob proposes an update, Alice commits it
+    println!("\n=== Scenario 1: Proposal + Commit ===");
+    
+    let update_proposal = bob.propose_self_update();
+    let protocol_msg = update_proposal
+        .try_into_protocol_message()
+        .unwrap();
+    alice.process_proposal(protocol_msg);
+
+    // Alice commits the pending proposal
+    let commit = alice.commit_pending_proposals();
+    let protocol_msg = commit.clone()
+        .try_into_protocol_message()
+        .unwrap();
+    bob.process_commit(protocol_msg);
+
+    println!("Alice epoch: {}", alice.group.epoch());
+    println!("Bob epoch: {}", bob.group.epoch());
+
+    // Scenario 2: Alice performs a self-update (immediate)
+    println!("\n=== Scenario 2: Self-Update ===");
+    
+    let (commit, _) = alice.self_update();
+    let protocol_msg = commit.try_into_protocol_message().unwrap();
+    bob.process_commit(protocol_msg);
+
+    println!("Alice epoch: {}", alice.group.epoch());
+    println!("Bob epoch: {}", bob.group.epoch());
+
+    // Verify both members are in sync
+    assert_eq!(alice.group.epoch(), bob.group.epoch());
+    println!("\n✓ All members in sync at epoch {}", alice.group.epoch());
+}
+
+fn create_member(name: &str) -> Member {
+    let provider = OpenMlsRustCrypto::default();
+    let credential = BasicCredential::new(name.as_bytes().to_vec());
+    let signature_keys = SignatureKeyPair::new(
+        CIPHERSUITE.signature_algorithm()
+    )
+    .expect("Error generating signature keys");
+
+    signature_keys
+        .store(provider.storage())
+        .expect("Error storing signature keys");
+
+    let credential_with_key = CredentialWithKey {
+        credential: credential.into(),
+        signature_key: signature_keys.public().into(),
+    };
+
+    // Create empty group (will be initialized later)
+    let group = MlsGroup::new(
+        &provider,
+        &signature_keys,
+        &MlsGroupCreateConfig::default(),
+        credential_with_key.clone(),
+    )
+    .expect("Failed to create group");
+
+    Member {
+        name: name.to_string(),
+        credential_with_key,
+        signer: signature_keys,
+        provider,
+        group,
+    }
+}
+```
+
+</Steps>
+
+## Key Rotation Patterns
+
+### Immediate Key Rotation
+
+For immediate rotation without waiting for others:
+
+```rust
+// Self-update: propose and commit in one step
+let (commit, _) = group.self_update(
+    provider,
+    signer,
+    LeafNodeParameters::default(),
+)?;
+group.merge_pending_commit(provider)?;
+```
+
+### Deferred Key Rotation
+
+For coordinated rotation with proposals:
+
+```rust
+// Step 1: Propose update
+let proposal = group.propose_self_update(
+    provider,
+    signer,
+    LeafNodeParameters::default(),
+)?;
+
+// Step 2: Someone commits (can be the proposer or another member)
+let (commit, _, _) = group.commit_to_pending_proposals(
+    provider,
+    signer,
+)?;
+group.merge_pending_commit(provider)?;
+```
+
+### Re-initialization
+
+For major group changes:
+
+```rust
+// Re-init changes group parameters
+let (commit, _, _) = group.propose_reinit(
+    provider,
+    signer,
+    new_group_context_extensions,
+    new_ciphersuite,
+)?;
+```
+
+## Security Considerations
+
+### Forward Secrecy
+
+Regular key rotation ensures that:
+- Compromise of current keys doesn't affect past messages
+- Each epoch uses fresh key material
+
+```rust
+// Rotate keys periodically (e.g., every hour)
+loop {
+    sleep(Duration::from_secs(3600));
+    let (commit, _) = member.self_update();
+    broadcast_to_group(commit);
+}
+```
+
+### Post-Compromise Security
+
+After a suspected compromise:
+
+```rust
+// Immediately rotate keys
+let (commit, _) = member.self_update();
+broadcast_to_group(commit);
+
+// Optionally remove and re-add the compromised member
+```
+
+## Epoch Management
+
+Each commit advances the group epoch:
+
+```rust
+// Check current epoch
+let current_epoch = group.epoch();
+println!("Current epoch: {}", current_epoch);
+
+// Commits increment the epoch
+group.self_update(provider, signer, LeafNodeParameters::default())?;
+group.merge_pending_commit(provider)?;
+
+assert_eq!(group.epoch().as_u64(), current_epoch.as_u64() + 1);
+```
+
+## Best Practices
+
+1. **Regular Rotation**: Schedule periodic key updates for forward secrecy
+2. **Sync Before Sending**: Ensure all members process commits before sending new messages
+3. **Graceful Degradation**: Handle epoch mismatches gracefully
+4. **Audit Trail**: Log all key rotation events for security monitoring
+
+## Next Steps
+
+- Learn about [custom crypto providers](/examples/custom-crypto) for hardware security modules
+- Implement [server integration](/examples/server-integration) for coordinated updates
+- Explore [custom storage](/examples/custom-storage) for key backup

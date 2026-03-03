@@ -1,0 +1,220 @@
+---
+title: Creating MLS Groups
+description: Create new MLS groups with OpenMLS
+---
+
+## Overview
+
+Create a new MLS group with yourself as the only member. Groups can be created with a random or custom group ID.
+
+## Creating a Group
+
+### Basic Creation
+
+Create a group with a random group ID:
+
+```rust
+use openmls::prelude::*;
+
+let mls_group = MlsGroup::new(
+    provider,
+    &signer,
+    &mls_group_create_config,
+    credential_with_key,
+)?;
+```
+
+### With Custom Group ID
+
+Create a group with a specific group ID:
+
+```rust
+let group_id = GroupId::from_slice(b"My Group");
+
+let mls_group = MlsGroup::new_with_group_id(
+    provider,
+    &signer,
+    &mls_group_create_config,
+    group_id,
+    credential_with_key,
+)?;
+```
+
+## Using the Builder
+
+For advanced configuration, use the builder pattern:
+
+```rust
+let mls_group = MlsGroup::builder()
+    .with_group_id(group_id)
+    .ciphersuite(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
+    .with_wire_format_policy(WireFormatPolicy::default())
+    .max_past_epochs(3)
+    .use_ratchet_tree_extension(true)
+    .build(provider, &signer, credential_with_key)?;
+```
+
+## Method Signatures
+
+### `MlsGroup::new`
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage operations
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signature key for authenticating group operations
+</ParamField>
+
+<ParamField path="mls_group_create_config" type="&MlsGroupCreateConfig" required>
+  Configuration for the new group (ciphersuite, extensions, etc.)
+</ParamField>
+
+<ParamField path="credential_with_key" type="CredentialWithKey" required>
+  Your credential and public key
+</ParamField>
+
+**Returns:** `Result<MlsGroup, NewGroupError>`
+
+**Location:** `openmls/src/group/mls_group/creation.rs:45`
+
+### `MlsGroup::new_with_group_id`
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage operations
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signature key for authenticating group operations
+</ParamField>
+
+<ParamField path="mls_group_create_config" type="&MlsGroupCreateConfig" required>
+  Configuration for the new group
+</ParamField>
+
+<ParamField path="group_id" type="GroupId" required>
+  Custom group identifier
+</ParamField>
+
+<ParamField path="credential_with_key" type="CredentialWithKey" required>
+  Your credential and public key
+</ParamField>
+
+**Returns:** `Result<MlsGroup, NewGroupError>`
+
+**Location:** `openmls/src/group/mls_group/creation.rs:61`
+
+### `MlsGroup::builder`
+
+Returns an `MlsGroupBuilder` for configuring group creation.
+
+**Location:** `openmls/src/group/mls_group/creation.rs:36`
+
+## Builder Configuration Options
+
+<ParamField path="with_group_id" type="GroupId">
+  Set a custom group ID (default: random)
+</ParamField>
+
+<ParamField path="ciphersuite" type="Ciphersuite">
+  Set the cryptographic ciphersuite
+</ParamField>
+
+<ParamField path="with_wire_format_policy" type="WireFormatPolicy">
+  Configure message wire format (plaintext/ciphertext)
+</ParamField>
+
+<ParamField path="max_past_epochs" type="usize">
+  Number of past epochs to keep for decryption (default: 0)
+</ParamField>
+
+<ParamField path="use_ratchet_tree_extension" type="bool">
+  Include ratchet tree in Welcome messages (default: false)
+</ParamField>
+
+<ParamField path="with_group_context_extensions" type="Extensions<GroupContext>">
+  Set group-level extensions
+</ParamField>
+
+<ParamField path="with_leaf_node_extensions" type="Extensions<LeafNode>">
+  Set leaf node extensions
+</ParamField>
+
+<ParamField path="with_capabilities" type="Capabilities">
+  Set supported capabilities
+</ParamField>
+
+<ParamField path="replace_old_group" type="bool">
+  Replace existing group with same ID if it exists
+</ParamField>
+
+## Complete Example
+
+<Steps>
+  <Step title="Setup credentials and provider">
+    ```rust
+    let provider = OpenMlsRustCrypto::default();
+    let (credential_with_key, signer) = setup_identity(&provider)?;
+    ```
+  </Step>
+
+  <Step title="Configure the group">
+    ```rust
+    let mls_group_create_config = MlsGroupCreateConfig::builder()
+        .ciphersuite(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
+        .use_ratchet_tree_extension(true)
+        .build();
+    ```
+  </Step>
+
+  <Step title="Create the group">
+    ```rust
+    let mut alice_group = MlsGroup::new(
+        &provider,
+        &signer,
+        &mls_group_create_config,
+        credential_with_key,
+    )?;
+    ```
+  </Step>
+
+  <Step title="Persist to storage">
+    ```rust
+    // Group is automatically saved to provider.storage()
+    // Retrieve later with:
+    let loaded_group = MlsGroup::load(
+        provider.storage(),
+        alice_group.group_id()
+    )?;
+    ```
+  </Step>
+</Steps>
+
+## Error Handling
+
+Group creation can fail with `NewGroupError`:
+
+- `GroupAlreadyExists` - A group with this ID already exists in storage
+- `UnsupportedProposalType` - Configuration includes unsupported proposals
+- `InvalidExtensions` - Invalid extension configuration
+- `StorageError` - Failed to persist group to storage
+
+```rust
+match MlsGroup::new(provider, &signer, &config, credential) {
+    Ok(group) => {
+        println!("Group created: {:?}", group.group_id());
+    }
+    Err(NewGroupError::GroupAlreadyExists) => {
+        // Handle duplicate group ID
+    }
+    Err(e) => {
+        eprintln!("Failed to create group: {}", e);
+    }
+}
+```
+
+## Next Steps
+
+- [Add members](/api/group/add-members) to grow your group
+- [Update](/api/group/update) your own key material
+- [Remove members](/api/group/remove-members) from the group

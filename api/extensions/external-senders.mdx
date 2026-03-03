@@ -1,0 +1,204 @@
+---
+title: ExternalSendersExtension
+description: Authorized external senders for group proposals
+---
+
+The `ExternalSendersExtension` is a GroupContext extension that contains the credentials and signature keys of senders permitted to send external proposals to the group.
+
+## Overview
+
+This extension allows entities outside the group to submit proposals (e.g., for administration purposes) by pre-authorizing their credentials and signature keys.
+
+## Structure
+
+```c
+struct {
+  SignaturePublicKey signature_key;
+  Credential credential;
+} ExternalSender;
+
+ExternalSender external_senders<V>;
+```
+
+## Types
+
+### ExternalSender
+
+Represents a single authorized external sender.
+
+<ParamField path="signature_key" type="SignaturePublicKey">
+  The public signature key of the external sender
+</ParamField>
+
+<ParamField path="credential" type="Credential">
+  The credential of the external sender
+</ParamField>
+
+### ExternalSendersExtension
+
+A list of ExternalSender entries:
+
+```rust
+pub type ExternalSendersExtension = Vec<ExternalSender>;
+```
+
+### SenderExtensionIndex
+
+Identifies an external sender in the ExternalSendersExtension list.
+
+<ParamField path="index" type="u32">
+  Zero-based index into the external senders list
+</ParamField>
+
+## Creating External Senders
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+
+// Create an external sender
+let external_sender = ExternalSender::new(
+    signature_key,  // SignaturePublicKey
+    credential      // Credential
+);
+
+// Create extension with multiple external senders
+let external_senders = vec![external_sender];
+let extension = Extension::ExternalSenders(external_senders);
+```
+
+## Methods
+
+### ExternalSender::new()
+
+Creates a new ExternalSender instance.
+
+```rust
+pub fn new(
+    signature_key: SignaturePublicKey,
+    credential: Credential
+) -> Self
+```
+
+<ParamField path="signature_key" type="SignaturePublicKey" required>
+  The signature public key of the external sender
+</ParamField>
+
+<ParamField path="credential" type="Credential" required>
+  The credential of the external sender
+</ParamField>
+
+<ResponseField name="return" type="ExternalSender">
+  New ExternalSender instance
+</ResponseField>
+
+### SenderExtensionIndex::new()
+
+Creates a new SenderExtensionIndex.
+
+```rust
+pub fn new(index: u32) -> Self
+```
+
+<ParamField path="index" type="u32" required>
+  The index of the external sender in the extension list
+</ParamField>
+
+<ResponseField name="return" type="SenderExtensionIndex">
+  New SenderExtensionIndex instance
+</ResponseField>
+
+## Usage in GroupContext
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+
+// Create external sender
+let admin_sender = ExternalSender::new(
+    admin_signature_key,
+    admin_credential
+);
+
+// Create extension
+let ext = Extension::ExternalSenders(vec![admin_sender]);
+
+// Add to group context extensions
+let mut extensions = Extensions::<GroupContext>::empty();
+extensions.add(ext)?;
+```
+
+## Accessing External Senders
+
+```rust
+// Get external senders from group context extensions
+if let Some(senders) = group.extensions().external_senders() {
+    for (index, sender) in senders.iter().enumerate() {
+        println!("External sender {}: {:?}", 
+                 index, 
+                 sender.credential());
+    }
+}
+```
+
+## Example: Adding an External Administrator
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+use openmls_basic_credential::SignatureKeyPair;
+
+// Generate admin credentials
+let admin_credential = BasicCredential::new(b"admin@example.com".to_vec());
+let admin_keypair = SignatureKeyPair::new(
+    ciphersuite.signature_algorithm()
+)?;
+
+// Create external sender for admin
+let admin_sender = ExternalSender::new(
+    admin_keypair.to_public_vec().into(),
+    admin_credential.into()
+);
+
+// Add to group configuration
+let extension = Extension::ExternalSenders(vec![admin_sender]);
+```
+
+## Sender Index Usage
+
+When an external sender sends a proposal, they identify themselves using a SenderExtensionIndex:
+
+```rust
+let sender_index = SenderExtensionIndex::new(0); // First external sender
+```
+
+The group validates the proposal by:
+1. Looking up the external sender at the specified index
+2. Verifying the proposal signature using the sender's signature key
+3. Checking the credential matches
+
+## Security Considerations
+
+1. **Authorization**: Only add trusted external senders to this list
+2. **Credential Validation**: Ensure external sender credentials are properly validated
+3. **Proposal Limits**: External senders can only send proposals, not commits
+4. **Group Control**: External proposals must still be committed by group members
+
+## Wire Format
+
+The extension is serialized as a vector of ExternalSender structs using TLS encoding:
+
+```c
+struct {
+    SignaturePublicKey signature_key;
+    Credential credential;
+} ExternalSender;
+
+ExternalSender external_senders<V>;
+```
+
+## See Also
+
+- [Extensions Overview](/api/extensions/overview)
+- [Credentials](https://www.rfc-editor.org/rfc/rfc9420.html#section-5.3)
+- [External Proposals](https://www.rfc-editor.org/rfc/rfc9420.html#section-12.1.8)

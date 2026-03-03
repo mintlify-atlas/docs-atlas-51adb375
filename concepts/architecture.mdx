@@ -1,0 +1,319 @@
+---
+title: Architecture
+description: Understand OpenMLS's modular architecture and provider-based design
+---
+
+OpenMLS is designed with a modular architecture that separates the core MLS protocol logic from platform-specific implementations. This design allows you to use OpenMLS across different environments, from standard servers to WebAssembly and secure enclaves.
+
+## Provider-based architecture
+
+OpenMLS defines several traits that abstract platform-specific functionality. Applications provide implementations of these traits through a unified `OpenMlsProvider`.
+
+### Core provider traits
+
+<CardGroup cols={2}>
+  <Card title="OpenMlsCrypto" icon="shield">
+    Cryptographic primitives for signatures, HPKE, hashing, and AEAD
+  </Card>
+  
+  <Card title="OpenMlsRand" icon="dice">
+    Random number generation for key creation and nonces
+  </Card>
+  
+  <Card title="StorageProvider" icon="database">
+    Persistent storage for key packages, group state, and secrets
+  </Card>
+</CardGroup>
+
+### The OpenMlsProvider trait
+
+All OpenMLS operations require a provider implementing the `OpenMlsProvider` trait:
+
+```rust
+pub trait OpenMlsProvider {
+    fn crypto(&self) -> &impl OpenMlsCrypto;
+    fn rand(&self) -> &impl OpenMlsRand;
+    fn storage(&self) -> &impl StorageProvider;
+}
+```
+
+This unified interface gives OpenMLS access to all required platform services.
+
+## Available provider implementations
+
+OpenMLS includes two production-ready providers:
+
+### openmls_rust_crypto
+
+The Rust crypto provider uses pure Rust cryptographic libraries:
+
+```rust
+use openmls_rust_crypto::OpenMlsRustCrypto;
+
+let provider = OpenMlsRustCrypto::default();
+```
+
+**Best for:**
+- Standard server and desktop applications
+- Environments where Rust toolchain is available
+- Development and testing
+
+### openmls_libcrux_crypto
+
+The libcrux provider uses formally verified cryptographic primitives:
+
+```rust
+use openmls_libcrux_crypto::OpenMlsLibcruxCrypto;
+
+let provider = OpenMlsLibcruxCrypto::default();
+```
+
+**Best for:**
+- High-assurance applications requiring verified cryptography
+- Safety-critical systems
+- Compliance-focused deployments
+
+## Cryptographic provider interface
+
+The `OpenMlsCrypto` trait defines operations for all cryptographic primitives:
+
+```rust
+pub trait OpenMlsCrypto {
+    // HPKE operations
+    fn derive_hpke_keypair(
+        &self,
+        config: HpkeConfig,
+        ikm: &[u8],
+    ) -> Result<HpkeKeyPair, CryptoError>;
+    
+    // Signature operations  
+    fn sign(
+        &self,
+        signature_scheme: SignatureScheme,
+        data: &[u8],
+        key: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+    
+    fn verify(
+        &self,
+        signature_scheme: SignatureScheme,
+        data: &[u8],
+        key: &[u8],
+        signature: &[u8],
+    ) -> Result<(), CryptoError>;
+    
+    // AEAD operations
+    fn aead_encrypt(
+        &self,
+        alg: AeadType,
+        key: &[u8],
+        data: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+    
+    // Hash and KDF operations
+    fn hash(
+        &self,
+        alg: HashType,
+        data: &[u8],
+    ) -> Result<Vec<u8>, CryptoError>;
+    
+    // ... additional methods
+}
+```
+
+This interface abstracts all cryptographic operations used by MLS, from HPKE key derivation to signature verification.
+
+## Storage provider interface
+
+The `StorageProvider` trait manages persistent state:
+
+```rust
+pub trait StorageProvider<const VERSION: u16> {
+    type Error: std::error::Error + std::fmt::Debug;
+    
+    fn write<T: serde::Serialize>(
+        &self,
+        key: &[u8],
+        value: &T,
+    ) -> Result<(), Self::Error>;
+    
+    fn read<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<T>, Self::Error>;
+    
+    fn delete(&self, key: &[u8]) -> Result<(), Self::Error>;
+}
+```
+
+### Storage operations
+
+OpenMLS stores:
+- **Key packages**: Pre-published key material with private keys
+- **Group state**: Current group configuration and ratchet tree
+- **Epoch secrets**: Cryptographic material for past epochs (configurable retention)
+- **Signature keys**: Long-term signing keys for credentials
+
+### Example: Storing a key package
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+
+let provider = OpenMlsRustCrypto::default();
+
+// Create and automatically store a key package
+let key_package = KeyPackage::builder()
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+
+// The key package is stored using its hash reference as the key
+let key_package_ref = key_package.key_package().hash_ref(provider.crypto())?;
+
+// Later, retrieve it from storage
+let retrieved: Option<KeyPackageBundle> = provider
+    .storage()
+    .read(key_package_ref.as_slice())?;
+```
+
+## Random number generation
+
+The `OpenMlsRand` trait provides cryptographically secure randomness:
+
+```rust
+pub trait OpenMlsRand {
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], RandomnessError>;
+    
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, RandomnessError>;
+}
+```
+
+OpenMLS uses randomness for:
+- Generating HPKE and signature keys
+- Creating random group IDs
+- Generating nonces for encryption
+- Deriving fresh key material
+
+## Separation of concerns
+
+OpenMLS's architecture cleanly separates:
+
+<Tabs>
+  <Tab title="Protocol logic">
+    The core library implements MLS protocol operations:
+    - Message processing and validation
+    - Ratchet tree operations (TreeSync)
+    - Key derivation and scheduling
+    - Proposal and commit handling
+    
+    This logic is platform-agnostic and doesn't depend on specific crypto or storage implementations.
+  </Tab>
+  
+  <Tab title="Cryptographic operations">
+    Provider implementations handle:
+    - Signature generation and verification
+    - HPKE encryption and decryption
+    - AEAD encryption for messages
+    - Hash functions and KDFs
+    
+    You can swap providers without changing application code.
+  </Tab>
+  
+  <Tab title="Storage and persistence">
+    Storage providers manage:
+    - Serialization and deserialization
+    - Key-value storage operations
+    - Transaction semantics (if supported)
+    
+    Different storage backends (memory, SQLite, PostgreSQL, etc.) can be used.
+  </Tab>
+  
+  <Tab title="Application logic">
+    Applications implement:
+    - Delivery Service for message routing
+    - Authentication Service for credential validation
+    - Group management policies
+    - User interface and experience
+  </Tab>
+</Tabs>
+
+## Custom provider implementations
+
+You can create custom providers for specialized environments:
+
+```rust
+use openmls_traits::{OpenMlsProvider, OpenMlsCrypto, OpenMlsRand, storage::StorageProvider};
+
+struct MyCustomProvider {
+    crypto: MyCryptoImpl,
+    rand: MyRandImpl,
+    storage: MyStorageImpl,
+}
+
+impl OpenMlsProvider for MyCustomProvider {
+    fn crypto(&self) -> &impl OpenMlsCrypto {
+        &self.crypto
+    }
+    
+    fn rand(&self) -> &impl OpenMlsRand {
+        &self.rand
+    }
+    
+    fn storage(&self) -> &impl StorageProvider {
+        &self.storage
+    }
+}
+```
+
+<Note>
+  Custom providers enable OpenMLS to run in specialized environments like WebAssembly (using WebCrypto), secure enclaves (using enclave-specific crypto), or embedded systems with hardware security modules.
+</Note>
+
+## Signature key management
+
+OpenMLS separates signature key management from the core library. The `openmls_basic_credential` crate provides a reference implementation:
+
+```rust
+use openmls_basic_credential::SignatureKeyPair;
+use openmls::prelude::*;
+
+// Generate a signature key pair
+let signature_keys = SignatureKeyPair::new(
+    ciphersuite.signature_algorithm()
+)?;
+
+// Store it for later use
+signature_keys.store(provider.storage())?;
+
+// Use it to sign MLS messages
+let signer = &signature_keys;
+```
+
+This design allows applications to use their own key management solutions, including hardware security modules or external key management services.
+
+## Platform support
+
+OpenMLS's architecture supports multiple platforms:
+
+- **Native (Linux, macOS, Windows)**: Full support with Rust crypto providers
+- **WebAssembly**: Compile with the `js` feature for browser environments
+- **Mobile (iOS, Android)**: Build for ARM architectures
+- **Embedded systems**: 32-bit and above platforms supported
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="Ciphersuites" icon="lock" href="/concepts/ciphersuites">
+    Learn about supported cryptographic algorithm combinations
+  </Card>
+  
+  <Card title="Storage" icon="database" href="/essentials/storage">
+    Explore storage provider implementations
+  </Card>
+</CardGroup>

@@ -1,0 +1,452 @@
+---
+title: Commit Messages
+description: API reference for OpenMLS commit messages and group state transitions
+---
+
+Commit messages apply a set of proposals atomically to transition the group to a new epoch.
+
+## Overview
+
+A Commit is the mechanism by which group state changes. It references or includes proposals and advances the group's epoch.
+
+### Commit Structure
+
+```c
+// RFC 9420
+struct {
+    ProposalOrRef proposals<V>;
+    optional<UpdatePath> path;
+} Commit;
+```
+
+<ParamField path="proposals" type="Vec<ProposalOrRef>" required>
+  Collection of proposals to apply (by value or reference)
+</ParamField>
+
+<ParamField path="path" type="Option<UpdatePath>">
+  Update path to refresh encryption keys (required in some cases)
+</ParamField>
+
+## Commit Fields
+
+### Proposals
+
+The proposals included in a commit can be specified by value or by reference.
+
+```rust
+pub enum ProposalOrRef {
+    Proposal(Box<Proposal>),
+    Reference(Box<ProposalRef>),
+}
+```
+
+**By Value**: Full proposal is included in the commit
+- Used for proposals created in the same commit
+- Larger message size
+
+**By Reference**: Only hash reference is included
+- References previously sent proposal messages  
+- Smaller message size
+- Proposal must be in the proposal queue
+
+### Update Path
+
+The update path refreshes the encryption keys along the sender's direct path in the ratchet tree.
+
+```c
+struct {
+    LeafNode leaf_node;
+    HPKECiphertext encrypted_path_secret<V>;
+} UpdatePath;
+```
+
+<ParamField path="leaf_node" type="LeafNode" required>
+  The committer's new leaf node
+</ParamField>
+
+<ParamField path="encrypted_path_secret" type="Vec<HpkeCiphertext>" required>
+  Path secrets encrypted to each node's resolution
+</ParamField>
+
+## Creating Commits
+
+### Commit Builder
+
+```rust
+use openmls::prelude::*;
+
+// Commit pending proposals from the queue
+let (commit, welcome, group_info) = group.commit_to_pending_proposals(
+    provider,
+    &signer
+)?;
+
+// commit: MlsMessageOut containing the commit
+// welcome: Option<MlsMessageOut> if members were added
+// group_info: Option<GroupInfo> for new members
+```
+
+### Self-Update Commit
+
+```rust
+// Create commit with inline self-update
+let (commit, welcome, group_info) = group.self_update(
+    provider,
+    &signer,
+)?;
+```
+
+### External Commit
+
+Join a group using an external commit.
+
+```rust
+use openmls::prelude::*;
+
+// Join via external commit
+let (group, commit, group_info) = StagedWelcome::new_from_external_commit(
+    provider,
+    &join_config,
+    verifiable_group_info,
+    &credential_with_key,
+    &signer,
+)?;
+```
+
+## Path Requirements
+
+Certain commits MUST include an update path:
+
+<ResponseField name="Update proposal">
+  Commit contains at least one Update proposal
+</ResponseField>
+
+<ResponseField name="Remove proposal">
+  Commit contains at least one Remove proposal
+</ResponseField>
+
+<ResponseField name="External commit">
+  Commit is an external commit (joining the group)
+</ResponseField>
+
+<ResponseField name="GroupContextExtensions">
+  Commit updates group context extensions
+</ResponseField>
+
+<ResponseField name="SelfRemove">
+  Commit contains a SelfRemove proposal
+</ResponseField>
+
+```rust
+// Check if path is required
+let path_required = commit.proposals.iter()
+    .any(|p| p.proposal_type().is_path_required());
+
+if path_required && commit.path.is_none() {
+    // Invalid commit: path required but missing
+}
+```
+
+## Confirmation Tag
+
+Commits include a confirmation tag to authenticate the new group state.
+
+```rust
+pub struct ConfirmationTag(pub(crate) Mac);
+```
+
+The confirmation tag is a MAC over the confirmed transcript hash:
+
+```text
+confirmation_tag = MAC(confirmation_key, confirmed_transcript_hash)
+```
+
+<ParamField path="confirmation_key" type="Secret">
+  Derived from the new epoch's key schedule
+</ParamField>
+
+<ParamField path="confirmed_transcript_hash" type="Hash">
+  Hash of interim transcript + commit content + signature
+</ParamField>
+
+### Verification
+
+Receivers verify the confirmation tag to ensure:
+- The commit is authentic
+- All members have the same view of group state
+- The committer has the correct key schedule
+
+## Processing Commits
+
+### Validation
+
+When processing a commit, OpenMLS validates:
+
+1. **Proposal validation**: All proposals are well-formed and authorized
+2. **Path validation**: Update path is present when required and valid
+3. **Signature validation**: Commit signature is valid
+4. **Confirmation tag**: MAC verifies correctly
+5. **Semantic validation**: Proposals are compatible and applicable
+
+```rust
+let processed = group.process_message(provider, protocol_message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+        // Inspect before merging
+        for proposal in staged_commit.queued_proposals() {
+            // Review proposals
+        }
+        
+        // Merge the commit
+        group.merge_staged_commit(provider, *staged_commit)?;
+    }
+    _ => {}
+}
+```
+
+### Staged Commit
+
+Commits are first staged for inspection before merging.
+
+```rust
+pub struct StagedCommit {
+    // Validated commit ready to merge
+}
+```
+
+<ParamField path="queued_proposals()" type="&[QueuedProposal]">
+  Returns the proposals included in this commit
+</ParamField>
+
+<ParamField path="add_proposals()" type="impl Iterator<Item = QueuedProposal>">
+  Returns an iterator over Add proposals
+</ParamField>
+
+<ParamField path="remove_proposals()" type="impl Iterator<Item = QueuedProposal>">
+  Returns an iterator over Remove proposals  
+</ParamField>
+
+<ParamField path="update_proposals()" type="impl Iterator<Item = QueuedProposal>">
+  Returns an iterator over Update proposals
+</ParamField>
+
+## Epoch Transition
+
+When a commit is merged, the group transitions to a new epoch.
+
+### State Changes
+
+1. **Epoch incremented**: `epoch = old_epoch + 1`
+2. **Proposals applied**: All proposals in commit are applied to tree
+3. **Key schedule advanced**: New secrets derived for the epoch
+4. **Transcript updated**: Commit added to transcript hash
+
+```rust
+// Before merge
+let old_epoch = group.epoch();
+
+// Merge commit
+group.merge_staged_commit(provider, staged_commit)?;
+
+// After merge  
+let new_epoch = group.epoch();
+assert_eq!(new_epoch, old_epoch + 1);
+```
+
+## Welcome Messages
+
+When a commit adds new members, a Welcome message is generated.
+
+```rust
+let (commit, welcome, _group_info) = group.add_members(
+    provider,
+    &signer,
+    &[key_package]
+)?;
+
+if let Some(welcome) = welcome {
+    // Send welcome to new members
+    send_to_new_members(welcome);
+}
+```
+
+See [Welcome Messages](/api/messages/welcome) for details.
+
+## Commit Types
+
+### Member Commit
+
+Standard commit from an existing group member.
+
+```rust
+let sender = Sender::Member(leaf_index);
+```
+
+### External Commit  
+
+Commit from a new member joining via external commit.
+
+```rust
+let sender = Sender::NewMemberCommit;
+```
+
+**Requirements**:
+- Must include ExternalInit proposal
+- Must include update path
+- Uses external public key from GroupInfo
+
+## Transcript Hashes
+
+Commits update two transcript hashes:
+
+### Confirmed Transcript Hash
+
+Hash including the commit and signature:
+
+```text
+confirmed_transcript_hash = Hash(
+    interim_transcript_hash ||
+    WireFormat || FramedContent || signature
+)
+```
+
+### Interim Transcript Hash
+
+Hash including the confirmation tag:
+
+```text
+interim_transcript_hash = Hash(
+    confirmed_transcript_hash ||
+    confirmation_tag  
+)
+```
+
+These ensure all members agree on group history.
+
+## Empty Commits
+
+Commits with no proposals are allowed:
+
+```rust
+// Create empty commit (advances epoch only)
+let (commit, welcome, group_info) = group.commit_to_pending_proposals(
+    provider,
+    &signer
+)?;
+// If no proposals queued, this is an empty commit
+```
+
+**Use cases**:
+- Force epoch advancement
+- Refresh keys periodically  
+- Recover from key compromise
+
+## Error Handling
+
+### Commit Creation Errors
+
+```rust
+pub enum CreateCommitError {
+    LibraryError(LibraryError),
+    OwnKeyNotFound,
+    MissingOwnLeaf,
+    // ...
+}
+```
+
+### Commit Processing Errors
+
+```rust
+pub enum ValidationError {
+    InvalidProposal,
+    InvalidPath,
+    InvalidSignature,
+    InvalidConfirmationTag,
+    ProposalNotFound,
+    UnauthorizedProposal,
+    // ...
+}
+```
+
+## Examples
+
+### Simple Commit
+
+```rust
+use openmls::prelude::*;
+
+// Propose changes
+group.propose_add_member(provider, &signer, &key_package)?;
+group.propose_remove_member(provider, &signer, target_index)?;
+
+// Commit all pending proposals
+let (commit, welcome, group_info) = group.commit_to_pending_proposals(
+    provider,
+    &signer
+)?;
+
+// Send commit to group
+send_to_group(commit);
+
+// Send welcome to new members if present
+if let Some(welcome) = welcome {
+    send_to_new_members(welcome);
+}
+
+// Merge own commit
+group.merge_pending_commit(provider)?;
+```
+
+### Process Received Commit
+
+```rust
+// Receive commit message
+let message_in = MlsMessageIn::tls_deserialize(&mut bytes.as_slice())?;
+let protocol_message = message_in.try_into_protocol_message()?;
+
+// Process
+let processed = group.process_message(provider, protocol_message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+        // Inspect proposals
+        println!("Commit contains {} proposals", 
+                 staged_commit.queued_proposals().len());
+        
+        // Merge to apply changes
+        group.merge_staged_commit(provider, *staged_commit)?;
+        println!("New epoch: {}", group.epoch());
+    }
+    _ => {}
+}
+```
+
+### External Commit
+
+```rust
+// Fetch group info from existing member
+let verifiable_group_info = fetch_group_info();
+
+// Create external commit to join
+let (mut group, commit, _ratchet_tree) = 
+    StagedWelcome::new_from_external_commit(
+        provider,
+        &join_config,
+        verifiable_group_info,
+        &credential_with_key,
+        &signer,
+    )?;
+
+// Send commit to group
+send_to_group(commit);
+
+// Now a member of the group
+println!("Joined group: {:?}", group.group_id());
+```
+
+## Related Types
+
+- [Proposals](/api/messages/proposals) - Proposal types applied by commits
+- [Welcome Messages](/api/messages/welcome) - Messages for new members
+- [Message Framing](/api/messages/framing) - Message wrapper types

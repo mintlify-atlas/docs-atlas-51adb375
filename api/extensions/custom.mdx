@@ -1,0 +1,309 @@
+---
+title: Custom Extensions
+description: Defining and using custom MLS extensions
+---
+
+OpenMLS supports custom (unknown) extensions that allow applications to extend MLS functionality beyond the standard extension types defined in RFC 9420.
+
+## Overview
+
+Custom extensions use the `Unknown` variant of the `Extension` enum and can be used to add application-specific data to MLS structures.
+
+## Extension Type Ranges
+
+Per RFC 9420, extension types are divided into ranges:
+
+| Range | Purpose |
+|-------|----------|
+| 0x0000 | Reserved |
+| 0x0001 - 0x0005 | Standard extensions |
+| 0x000A | LastResort extension |
+| 0x0A0A, 0x1A1A, etc. | GREASE values (pattern: 0x_A_A) |
+| 0xFF00 - 0xFFFF | Reserved for private use |
+
+Custom extensions should use values from 0xFF00 - 0xFFFF for private use.
+
+## UnknownExtension Structure
+
+```rust
+pub struct UnknownExtension(pub Vec<u8>);
+
+pub enum Extension {
+    // ... standard extensions ...
+    Unknown(u16, UnknownExtension),
+}
+```
+
+<ParamField path="extension_type" type="u16">
+  The numeric identifier for the extension type (0xFF00 - 0xFFFF recommended)
+</ParamField>
+
+<ParamField path="extension_data" type="UnknownExtension">
+  The raw bytes of the extension data
+</ParamField>
+
+## Creating Custom Extensions
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+
+// Define extension type in private use range
+const MY_EXTENSION_TYPE: u16 = 0xFF00;
+
+// Create extension data
+let custom_data = vec![0x01, 0x02, 0x03, 0x04];
+let unknown_ext = UnknownExtension(custom_data);
+
+// Create the extension
+let extension = Extension::Unknown(MY_EXTENSION_TYPE, unknown_ext);
+```
+
+## Adding to Extension Lists
+
+```rust
+use openmls::prelude::*;
+
+// Create custom extension
+let my_ext = Extension::Unknown(
+    0xFF00,
+    UnknownExtension(b"custom-data".to_vec())
+);
+
+// Add to leaf node extensions
+let mut extensions = Extensions::<LeafNode>::empty();
+extensions.add(my_ext)?;
+```
+
+## Retrieving Custom Extensions
+
+```rust
+// Get unknown extension by type ID
+if let Some(unknown_ext) = extensions.unknown(0xFF00) {
+    let data: &Vec<u8> = &unknown_ext.0;
+    println!("Custom extension data: {:?}", data);
+}
+
+// Iterate through all extensions
+for ext in extensions.iter() {
+    match ext {
+        Extension::Unknown(type_id, data) => {
+            println!("Unknown extension {:#06x}: {:?}", type_id, data.0);
+        }
+        _ => {}
+    }
+}
+```
+
+## Example: JSON Metadata Extension
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct UserMetadata {
+    display_name: String,
+    avatar_url: String,
+    status: String,
+}
+
+const USER_METADATA_EXT: u16 = 0xFF01;
+
+// Create metadata
+let metadata = UserMetadata {
+    display_name: "Alice".to_string(),
+    avatar_url: "https://example.com/alice.jpg".to_string(),
+    status: "online".to_string(),
+};
+
+// Serialize to JSON
+let json_bytes = serde_json::to_vec(&metadata)?;
+
+// Create extension
+let ext = Extension::Unknown(
+    USER_METADATA_EXT,
+    UnknownExtension(json_bytes)
+);
+
+// Add to extensions
+let mut extensions = Extensions::<LeafNode>::empty();
+extensions.add(ext)?;
+
+// Later, retrieve and deserialize
+if let Some(unknown_ext) = extensions.unknown(USER_METADATA_EXT) {
+    let metadata: UserMetadata = serde_json::from_slice(&unknown_ext.0)?;
+    println!("Display name: {}", metadata.display_name);
+}
+```
+
+## Example: Binary Protocol Buffer Extension
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+
+const PROTO_EXT_TYPE: u16 = 0xFF02;
+
+// Assuming you have protobuf types generated
+// let proto_msg = MyProtoMessage { ... };
+// let proto_bytes = proto_msg.encode_to_vec();
+
+let proto_bytes = vec![/* protobuf bytes */];
+
+let ext = Extension::Unknown(
+    PROTO_EXT_TYPE,
+    UnknownExtension(proto_bytes)
+);
+```
+
+## Context Validation
+
+Unknown extensions have different validity based on context:
+
+### LeafNode Context
+Unknown extensions are **valid** in LeafNodes.
+
+```rust
+let mut leaf_extensions = Extensions::<LeafNode>::empty();
+leaf_extensions.add(Extension::Unknown(0xFF00, UnknownExtension(data)))?; // OK
+```
+
+### GroupContext Context
+Unknown extensions are **valid** in GroupContext.
+
+```rust
+let mut group_extensions = Extensions::<GroupContext>::empty();
+group_extensions.add(Extension::Unknown(0xFF00, UnknownExtension(data)))?; // OK
+```
+
+### GroupInfo Context
+Validity is **unknown** (implementation-dependent) for GroupInfo.
+
+### KeyPackage Context
+Unknown extensions are **valid** in KeyPackages.
+
+## Capabilities and Required Capabilities
+
+For custom extensions to be usable:
+
+### 1. Declare in Capabilities
+
+```rust
+let capabilities = Capabilities::builder()
+    .extensions(vec![
+        ExtensionType::Unknown(0xFF00),
+        ExtensionType::Unknown(0xFF01),
+    ])
+    .build();
+```
+
+### 2. Require in Group (Optional)
+
+```rust
+let required_caps = RequiredCapabilitiesExtension::new(
+    &[ExtensionType::Unknown(0xFF00)],  // Require all members support this
+    &[],
+    &[]
+);
+```
+
+## Serialization
+
+Custom extensions are serialized using TLS encoding:
+
+```c
+struct {
+    ExtensionType extension_type;  // 2 bytes: 0xFF00
+    opaque extension_data<V>;      // Variable length with length prefix
+} Extension;
+```
+
+## Best Practices
+
+1. **Type Registration**: Document your custom extension types internally
+2. **Version Management**: Include version info in your extension data
+3. **Backward Compatibility**: Handle missing or unknown versions gracefully
+4. **Size Limits**: Keep extension data reasonably sized
+5. **Validation**: Validate deserialized data thoroughly
+6. **Error Handling**: Handle parsing errors gracefully
+7. **Privacy**: Don't include sensitive data in extensions
+
+## Example: Versioned Extension
+
+```rust
+use openmls::prelude::*;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct VersionedExtension {
+    version: u8,
+    data: Vec<u8>,
+}
+
+const MY_EXT_TYPE: u16 = 0xFF03;
+const CURRENT_VERSION: u8 = 1;
+
+// Create versioned extension
+let versioned = VersionedExtension {
+    version: CURRENT_VERSION,
+    data: b"extension-data".to_vec(),
+};
+
+let bytes = serde_json::to_vec(&versioned)?;
+let ext = Extension::Unknown(MY_EXT_TYPE, UnknownExtension(bytes));
+
+// Parse with version checking
+if let Some(unknown) = extensions.unknown(MY_EXT_TYPE) {
+    let versioned: VersionedExtension = serde_json::from_slice(&unknown.0)?;
+    
+    match versioned.version {
+        1 => { /* handle v1 */ }
+        _ => { /* unknown version, handle gracefully */ }
+    }
+}
+```
+
+## GREASE Extensions
+
+GREASE (Generate Random Extensions And Sustain Extensibility) values follow the pattern 0x_A_A:
+
+```rust
+let grease_type = ExtensionType::Grease(0x0A0A);
+
+// Check if an extension type is GREASE
+if extension_type.is_grease() {
+    // This is a GREASE value, ignore or handle specially
+}
+```
+
+GREASE values are used to ensure implementations properly handle unknown extensions.
+
+## Common Patterns
+
+### Application Metadata
+```rust
+const APP_METADATA: u16 = 0xFF10;
+```
+
+### User Presence Information
+```rust
+const PRESENCE_INFO: u16 = 0xFF11;
+```
+
+### Custom Authentication Data
+```rust
+const AUTH_DATA: u16 = 0xFF12;
+```
+
+### Experimental Features
+```rust
+const EXPERIMENTAL_FEATURE: u16 = 0xFFF0;
+```
+
+## See Also
+
+- [Extensions Overview](/api/extensions/overview)
+- [Required Capabilities](/api/extensions/required-capabilities)
+- [RFC 9420 Section 13.5 - GREASE](https://www.rfc-editor.org/rfc/rfc9420.html#section-13.5)

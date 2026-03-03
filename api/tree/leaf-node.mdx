@@ -1,0 +1,417 @@
+---
+title: LeafNode
+description: MLS leaf node representing group members
+---
+
+A `LeafNode` represents a member's position in the MLS ratchet tree. Each leaf contains the member's credentials, encryption key, signature key, capabilities, and extensions.
+
+## Overview
+
+Leaf nodes are located at even indices in the tree array representation. Each non-blank leaf represents an active group member.
+
+## Structure
+
+```c
+struct {
+    HPKEPublicKey encryption_key;
+    SignaturePublicKey signature_key;
+    Credential credential;
+    Capabilities capabilities;
+    
+    LeafNodeSource leaf_node_source;
+    select (LeafNode.leaf_node_source) {
+        case key_package:
+            Lifetime lifetime;
+        case update:
+            struct{};
+        case commit:
+            opaque parent_hash<V>;
+    };
+    
+    Extension extensions<V>;
+    opaque signature<V>;
+} LeafNode;
+```
+
+## Fields
+
+<ParamField path="encryption_key" type="EncryptionKey">
+  HPKE public key for encrypting to this member
+</ParamField>
+
+<ParamField path="signature_key" type="SignaturePublicKey">
+  Public key for verifying signatures from this member
+</ParamField>
+
+<ParamField path="credential" type="Credential">
+  The member's credential (identity)
+</ParamField>
+
+<ParamField path="capabilities" type="Capabilities">
+  Supported protocol versions, ciphersuites, extensions, proposals, and credentials
+</ParamField>
+
+<ParamField path="leaf_node_source" type="LeafNodeSource">
+  How this leaf node was created (KeyPackage, Update, or Commit)
+</ParamField>
+
+<ParamField path="extensions" type="Extensions<LeafNode>">
+  Additional extensions attached to this leaf
+</ParamField>
+
+<ParamField path="signature" type="Signature">
+  Signature over the leaf node content
+</ParamField>
+
+## LeafNodeSource
+
+Indicates how the leaf node was created:
+
+```rust
+pub enum LeafNodeSource {
+    KeyPackage(Lifetime),  // From a KeyPackage
+    Update,                // From an Update proposal
+    Commit(ParentHash),    // From a Commit message
+}
+```
+
+### KeyPackage
+Contains a `Lifetime` indicating the validity period:
+
+```rust
+pub struct Lifetime {
+    not_before: u64,  // Unix timestamp
+    not_after: u64,   // Unix timestamp
+}
+```
+
+### Update
+Created via an Update proposal. Contains no additional data.
+
+### Commit
+Created via a Commit message. Contains the parent hash:
+
+```rust
+pub type ParentHash = VLBytes;
+```
+
+## Creating LeafNodes
+
+Leaf nodes are typically created internally by OpenMLS, but can be generated for updates:
+
+```rust
+use openmls::prelude::*;
+
+let (leaf_node, encryption_keypair) = LeafNode::new(
+    provider,
+    signer,
+    new_leaf_node_params,
+)?;
+```
+
+<ParamField path="provider" type="&impl OpenMlsProvider" required>
+  Provider for crypto and storage operations
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signer for creating the leaf node signature
+</ParamField>
+
+<ParamField path="params" type="NewLeafNodeParams" required>
+  Parameters for the new leaf node
+</ParamField>
+
+<ResponseField name="return" type="(LeafNode, EncryptionKeyPair)">
+  The created leaf node and its encryption key pair
+</ResponseField>
+
+## LeafNodeParameters
+
+Builder for updating leaf node parameters:
+
+```rust
+let params = LeafNodeParameters::builder()
+    .with_capabilities(capabilities)
+    .with_extensions(extensions)
+    .build();
+```
+
+### Methods
+
+<ParamField path="with_credential_with_key" type="CredentialWithKey">
+  Set the credential and signature key
+</ParamField>
+
+<ParamField path="with_capabilities" type="Capabilities">
+  Set the capabilities
+</ParamField>
+
+<ParamField path="with_extensions" type="Extensions<LeafNode>">
+  Set the extensions
+</ParamField>
+
+## Accessing LeafNode Data
+
+### encryption_key()
+
+Returns the HPKE public key:
+
+```rust
+pub fn encryption_key(&self) -> &EncryptionKey
+```
+
+### signature_key()
+
+Returns the signature public key:
+
+```rust
+pub fn signature_key(&self) -> &SignaturePublicKey
+```
+
+### credential()
+
+Returns the credential:
+
+```rust
+pub fn credential(&self) -> &Credential
+```
+
+### capabilities()
+
+Returns the capabilities:
+
+```rust
+pub fn capabilities(&self) -> &Capabilities
+```
+
+### leaf_node_source()
+
+Returns how the leaf was created:
+
+```rust
+pub fn leaf_node_source(&self) -> &LeafNodeSource
+```
+
+### extensions()
+
+Returns the extensions:
+
+```rust
+pub fn extensions(&self) -> &Extensions<LeafNode>
+```
+
+### parent_hash()
+
+Returns the parent hash if source is Commit:
+
+```rust
+pub fn parent_hash(&self) -> Option<&[u8]>
+```
+
+### signature()
+
+Returns the signature:
+
+```rust
+pub fn signature(&self) -> &Signature
+```
+
+## Capabilities
+
+Leaf node capabilities declare what the member supports:
+
+```rust
+pub struct Capabilities {
+    versions: Vec<ProtocolVersion>,
+    ciphersuites: Vec<VerifiableCiphersuite>,
+    extensions: Vec<ExtensionType>,
+    proposals: Vec<ProposalType>,
+    credentials: Vec<CredentialType>,
+}
+```
+
+### Creating Capabilities
+
+```rust
+let capabilities = Capabilities::builder()
+    .versions(vec![ProtocolVersion::Mls10])
+    .ciphersuites(vec![
+        Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+    ])
+    .extensions(vec![
+        ExtensionType::ApplicationId,
+    ])
+    .proposals(vec![
+        ProposalType::Add,
+        ProposalType::Remove,
+    ])
+    .credentials(vec![
+        CredentialType::Basic,
+    ])
+    .build();
+```
+
+### Default Capabilities
+
+```rust
+let capabilities = Capabilities::default();
+// Contains default versions, ciphersuites, and credentials
+```
+
+### GREASE Values
+
+Add GREASE values to ensure extensibility:
+
+```rust
+let capabilities = Capabilities::builder()
+    .build()
+    .with_grease(provider.rand());
+```
+
+## Updating Leaf Nodes
+
+```rust
+let encryption_keypair = leaf_node.update(
+    ciphersuite,
+    provider,
+    signer,
+    group_id,
+    leaf_index,
+    leaf_node_parameters,
+)?;
+```
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  Ciphersuite to use
+</ParamField>
+
+<ParamField path="provider" type="&impl OpenMlsProvider" required>
+  Provider for operations
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signer for the update
+</ParamField>
+
+<ParamField path="group_id" type="GroupId" required>
+  The group ID
+</ParamField>
+
+<ParamField path="leaf_index" type="LeafNodeIndex" required>
+  Index of this leaf in the tree
+</ParamField>
+
+<ParamField path="parameters" type="LeafNodeParameters" required>
+  New parameters for the leaf
+</ParamField>
+
+<ResponseField name="return" type="EncryptionKeyPair">
+  New encryption key pair
+</ResponseField>
+
+## Validation
+
+### Local Validation
+
+```rust
+leaf_node.validate_locally()?;
+```
+
+Checks:
+- No invalid extensions for leaf nodes
+- All extensions are in capabilities
+- Credential type is in capabilities
+
+### Extension Support
+
+Check if an extension is supported:
+
+```rust
+if leaf_node.supports_extension(&ExtensionType::ApplicationId) {
+    // Extension is supported
+}
+```
+
+Check multiple required extensions:
+
+```rust
+let required = vec![
+    ExtensionType::ApplicationId,
+];
+
+leaf_node.check_extension_support(&required)?;
+```
+
+## Example: Inspecting a Leaf Node
+
+```rust
+use openmls::prelude::*;
+
+fn inspect_leaf_node(leaf: &LeafNode) {
+    println!("Credential: {:?}", leaf.credential());
+    println!("Source: {:?}", leaf.leaf_node_source());
+    
+    // Check capabilities
+    let caps = leaf.capabilities();
+    println!("Versions: {:?}", caps.versions());
+    println!("Ciphersuites: {:?}", caps.ciphersuites());
+    println!("Extensions: {:?}", caps.extensions());
+    
+    // Check for application ID extension
+    if let Some(app_id) = leaf.extensions().application_id() {
+        println!("App ID: {:?}", 
+                 String::from_utf8_lossy(app_id.as_slice()));
+    }
+    
+    // Get parent hash if from commit
+    if let Some(parent_hash) = leaf.parent_hash() {
+        println!("Parent hash: {} bytes", parent_hash.len());
+    }
+}
+```
+
+## Example: Creating Custom Leaf Parameters
+
+```rust
+use openmls::prelude::*;
+
+// Build custom capabilities
+let capabilities = Capabilities::builder()
+    .versions(vec![ProtocolVersion::Mls10])
+    .ciphersuites(vec![
+        Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+    ])
+    .extensions(vec![ExtensionType::ApplicationId])
+    .credentials(vec![CredentialType::Basic])
+    .build()
+    .with_grease(provider.rand());
+
+// Create extensions
+let mut extensions = Extensions::<LeafNode>::empty();
+extensions.add(Extension::ApplicationId(
+    ApplicationIdExtension::new(b"user-123")
+))?;
+
+// Build parameters
+let params = LeafNodeParameters::builder()
+    .with_capabilities(capabilities)
+    .with_extensions(extensions)
+    .build();
+```
+
+## Wire Format Signature
+
+Leaf nodes are signed using the "LeafNodeTBS" label:
+
+```c
+SignWithLabel(., "LeafNodeTBS", LeafNodeTBS)
+```
+
+The signature covers the leaf node content plus additional tree information based on the source.
+
+## See Also
+
+- [ParentNode](/api/tree/parent-node) - Parent node structure
+- [RatchetTree](/api/tree/ratchet-tree) - Complete tree structure
+- [Credentials](https://www.rfc-editor.org/rfc/rfc9420.html#section-5.3)
+- [Capabilities](https://www.rfc-editor.org/rfc/rfc9420.html#section-7.2)

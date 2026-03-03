@@ -1,0 +1,400 @@
+---
+title: PublicGroup
+description: Track MLS group public state without private key material
+---
+
+`PublicGroup` holds all public values of an MLS group and enables tracking of group membership and state based on `PublicMessage`s, without requiring private key material. This is useful for delivery services and observers.
+
+## Overview
+
+The `PublicGroup` struct allows tracking an MLS group's public state, including:
+
+- Group membership and the ratchet tree
+- Proposal store for pending proposals
+- Group context and configuration
+- Validation of commits and proposals
+
+Internally, `MlsGroup` relies on a `PublicGroup` for its public state management.
+
+## Creating a public group
+
+### from_external
+
+Creates a `PublicGroup` instance to start tracking an existing MLS group from external information.
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto">
+  Cryptographic provider for validation
+</ParamField>
+
+<ParamField path="storage" type="&StorageProvider">
+  Storage provider for persisting the group state
+</ParamField>
+
+<ParamField path="ratchet_tree" type="RatchetTreeIn">
+  The ratchet tree to initialize from
+</ParamField>
+
+<ParamField path="verifiable_group_info" type="VerifiableGroupInfo">
+  Group info for initializing the group context
+</ParamField>
+
+<ParamField path="proposal_store" type="ProposalStore">
+  Initial proposal store (typically empty)
+</ParamField>
+
+<ResponseField name="Result" type="Result<(PublicGroup, GroupInfo), CreationFromExternalError>">
+  Returns the public group and verified group info, or an error if validation fails
+</ResponseField>
+
+```rust
+let (public_group, group_info) = PublicGroup::from_external(
+    provider.crypto(),
+    provider.storage(),
+    ratchet_tree,
+    verifiable_group_info,
+    ProposalStore::new(),
+)?;
+```
+
+This function performs comprehensive validation including:
+- Leaf node validation (ValSem1407)
+- Signature key uniqueness (ValSem0111)
+- Encryption key uniqueness (ValSem0112)
+- Tree hash verification (ValSem1405)
+- Group info signature validation (ValSem1402)
+
+## Group information
+
+### group_id
+
+Returns the group ID.
+
+<ResponseField name="GroupId" type="&GroupId">
+  Reference to the group ID
+</ResponseField>
+
+```rust
+let id = public_group.group_id();
+```
+
+### group_context
+
+Returns the group context containing epoch, tree hash, and extensions.
+
+<ResponseField name="GroupContext" type="&GroupContext">
+  Reference to the group context
+</ResponseField>
+
+```rust
+let context = public_group.group_context();
+let epoch = context.epoch();
+let tree_hash = context.tree_hash();
+```
+
+### ciphersuite
+
+Returns the ciphersuite used by the group.
+
+<ResponseField name="Ciphersuite" type="Ciphersuite">
+  The group's ciphersuite
+</ResponseField>
+
+### version
+
+Returns the MLS protocol version.
+
+<ResponseField name="ProtocolVersion" type="ProtocolVersion">
+  The protocol version
+</ResponseField>
+
+### confirmation_tag
+
+Returns the most recent confirmation tag.
+
+<ResponseField name="ConfirmationTag" type="&ConfirmationTag">
+  Reference to the confirmation tag
+</ResponseField>
+
+## Membership
+
+### members
+
+Returns an iterator over all members of the group.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = Member>">
+  Iterator over group members, each containing index, credential, encryption key, and signature key
+</ResponseField>
+
+```rust
+for member in public_group.members() {
+    println!("Member {}: {:?}", member.index.u32(), member.credential);
+}
+```
+
+### leaf
+
+Returns the leaf node at a given index.
+
+<ParamField path="leaf_index" type="LeafNodeIndex">
+  The index of the leaf to retrieve
+</ParamField>
+
+<ResponseField name="Option" type="Option<&LeafNode>">
+  The leaf node if present, `None` if the leaf is blank
+</ResponseField>
+
+```rust
+if let Some(leaf_node) = public_group.leaf(leaf_index) {
+    println!("Credential: {:?}", leaf_node.credential());
+}
+```
+
+### treesync
+
+Returns the current tree state.
+
+<ResponseField name="TreeSync" type="&TreeSync">
+  Reference to the tree sync state
+</ResponseField>
+
+### export_ratchet_tree
+
+Exports the nodes of the public tree.
+
+<ResponseField name="RatchetTree" type="RatchetTree">
+  The exported ratchet tree
+</ResponseField>
+
+```rust
+let tree = public_group.export_ratchet_tree();
+```
+
+## Proposal management
+
+### add_proposal
+
+Adds a queued proposal to the internal proposal store.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="proposal" type="QueuedProposal">
+  The proposal to add
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+```rust
+public_group.add_proposal(provider.storage(), queued_proposal)?;
+```
+
+### remove_proposal
+
+Removes a proposal from the internal proposal store.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="proposal_ref" type="&ProposalRef">
+  Reference to the proposal to remove
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+### queued_proposals
+
+Returns all queued proposals from storage.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ResponseField name="Result" type="Result<Vec<(ProposalRef, QueuedProposal)>, Storage::Error>">
+  Vector of proposal references and their corresponding proposals
+</ResponseField>
+
+```rust
+let proposals = public_group.queued_proposals(provider.storage())?;
+for (proposal_ref, proposal) in proposals {
+    // Process proposal
+}
+```
+
+## Commit processing
+
+### merge_commit
+
+Merges a staged commit into the public group state.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="staged_commit" type="StagedCommit">
+  The staged commit to merge
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), MergeCommitError>">
+  Returns `()` on success
+</ResponseField>
+
+```rust
+public_group.merge_commit(provider.storage(), staged_commit)?;
+```
+
+This operation:
+- Applies the commit's changes to the tree
+- Updates the group context
+- Clears the proposal store
+- Persists the new state
+
+## Storage operations
+
+### load
+
+Loads a `PublicGroup` from storage.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="group_id" type="&GroupId">
+  ID of the group to load
+</ParamField>
+
+<ResponseField name="Result" type="Result<Option<PublicGroup>, Storage::Error>">
+  Returns the group if found, `None` if not found
+</ResponseField>
+
+```rust
+if let Some(group) = PublicGroup::load(provider.storage(), &group_id)? {
+    // Use the public group
+}
+```
+
+### delete
+
+Deletes a `PublicGroup` from storage.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="group_id" type="&GroupId">
+  ID of the group to delete
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+```rust
+PublicGroup::delete(provider.storage(), &group_id)?;
+```
+
+## Advanced operations
+
+### derive_path_secrets
+
+Derives encryption keypairs for nodes in the shared direct path between two leaves.
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto">
+  Cryptographic provider
+</ParamField>
+
+<ParamField path="ciphersuite" type="Ciphersuite">
+  The ciphersuite to use
+</ParamField>
+
+<ParamField path="path_secret" type="PathSecret">
+  The path secret to derive from
+</ParamField>
+
+<ParamField path="sender_index" type="LeafNodeIndex">
+  Index of the sender
+</ParamField>
+
+<ParamField path="leaf_index" type="LeafNodeIndex">
+  Index of the target leaf
+</ParamField>
+
+<ResponseField name="Result" type="Result<(Vec<EncryptionKeyPair>, CommitSecret), DerivePathError>">
+  Returns the derived keypairs and commit secret, or an error if the derived keys don't match existing ones
+</ResponseField>
+
+### ext_commit_sender_index
+
+Returns the index of the sender of a staged external commit.
+
+<ParamField path="commit" type="&StagedCommit">
+  The staged commit
+</ParamField>
+
+<ResponseField name="Result" type="Result<LeafNodeIndex, LibraryError>">
+  The sender's leaf index
+</ResponseField>
+
+### required_capabilities
+
+Returns the required capabilities extension if present in the group context.
+
+<ResponseField name="Option" type="Option<&RequiredCapabilitiesExtension>">
+  Optional reference to the required capabilities
+</ResponseField>
+
+```rust
+if let Some(required_caps) = public_group.required_capabilities() {
+    // Check capabilities
+}
+```
+
+## Use cases
+
+The `PublicGroup` API is designed for:
+
+### Delivery service tracking
+
+```rust
+// Track group membership without private keys
+let (public_group, _) = PublicGroup::from_external(
+    crypto,
+    storage,
+    ratchet_tree,
+    verifiable_group_info,
+    ProposalStore::new(),
+)?;
+
+// Monitor membership changes
+for member in public_group.members() {
+    delivery_service.register_member(member.index, member.credential);
+}
+```
+
+### Group state observation
+
+```rust
+// Track epochs and context changes
+let context = public_group.group_context();
+println!("Current epoch: {}", context.epoch().as_u64());
+println!("Tree hash: {:x?}", context.tree_hash());
+```
+
+### Proposal validation
+
+```rust
+// Track proposals without processing them
+let proposals = public_group.queued_proposals(storage)?;
+for (_, proposal) in proposals {
+    match proposal.proposal() {
+        Proposal::Add(_) => println!("Add proposal pending"),
+        Proposal::Remove(_) => println!("Remove proposal pending"),
+        _ => {}
+    }
+}
+```

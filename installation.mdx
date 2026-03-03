@@ -1,0 +1,245 @@
+---
+title: "Installation"
+description: "Add OpenMLS to your Rust project and configure the features you need"
+---
+
+## Prerequisites
+
+OpenMLS requires Rust 1.56 or later. Make sure you have Rust installed:
+
+```bash
+rustc --version
+```
+
+If you need to install Rust, visit [rustup.rs](https://rustup.rs).
+
+## Add OpenMLS to your project
+
+Add OpenMLS to your `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+openmls = "0.8.1"
+```
+
+## Choose a crypto provider
+
+OpenMLS requires a cryptographic provider. You have several options:
+
+### Option 1: Rust Crypto (recommended for getting started)
+
+The `openmls_rust_crypto` provider uses pure Rust cryptographic implementations:
+
+```toml Cargo.toml
+[dependencies]
+openmls = "0.8.1"
+openmls_rust_crypto = "0.4"
+```
+
+### Option 2: libcrux provider
+
+The `libcrux` provider offers formally verified cryptographic implementations:
+
+```toml Cargo.toml
+[dependencies]
+openmls = { version = "0.8.1", features = ["libcrux-provider"] }
+```
+
+### Option 3: Custom provider
+
+Implement the provider traits yourself for full control. See [Custom implementation](/traits/custom-implementation) for details.
+
+## Storage provider
+
+OpenMLS needs a storage backend for key material and group state:
+
+### In-memory storage (development)
+
+For testing and development, use the memory storage provider:
+
+```toml Cargo.toml
+[dependencies]
+openmls = { version = "0.8.1", features = ["test-utils"] }
+openmls_memory_storage = "0.3"
+```
+
+<Warning>
+In-memory storage is not persistent. Use it only for testing and development.
+</Warning>
+
+### SQLite storage (production)
+
+For production applications, use the SQLite storage provider:
+
+```toml Cargo.toml
+[dependencies]
+openmls = { version = "0.8.1", features = ["sqlite-provider"] }
+```
+
+## Credentials
+
+For basic credential support, add the basic credential crate:
+
+```toml Cargo.toml
+[dependencies]
+openmls = "0.8.1"
+openmls_basic_credential = "0.4"
+```
+
+## Feature flags
+
+OpenMLS provides several optional features:
+
+### Production features
+
+<AccordionGroup>
+  <Accordion title="extensions-draft-08">
+    Enable features defined in [MLS extensions draft-08](https://messaginglayersecurity.rocks/mls-extensions/draft-ietf-mls-extensions.html):
+    
+    ```toml Cargo.toml
+    [dependencies]
+    openmls = { version = "0.8.1", features = ["extensions-draft-08"] }
+    ```
+  </Accordion>
+  
+  <Accordion title="fork-resolution">
+    Enable helper functionality for resolving forks in MLS groups:
+    
+    ```toml Cargo.toml
+    [dependencies]
+    openmls = { version = "0.8.1", features = ["fork-resolution"] }
+    ```
+    
+    See [Fork resolution](/advanced/fork-resolution) for usage details.
+  </Accordion>
+  
+  <Accordion title="js">
+    Enable compilation to WebAssembly with JavaScript APIs:
+    
+    ```toml Cargo.toml
+    [dependencies]
+    openmls = { version = "0.8.1", features = ["js"] }
+    ```
+    
+    <Note>
+    This feature is required when building for `wasm32-unknown-unknown` to access secure randomness and timing APIs.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Development features
+
+<AccordionGroup>
+  <Accordion title="test-utils">
+    Utilities for testing, including in-memory storage:
+    
+    ```toml Cargo.toml
+    [dev-dependencies]
+    openmls = { version = "0.8.1", features = ["test-utils"] }
+    ```
+  </Accordion>
+  
+  <Accordion title="backtrace">
+    Enable backtrace support for error handling:
+    
+    ```toml Cargo.toml
+    [dependencies]
+    openmls = { version = "0.8.1", features = ["backtrace"] }
+    ```
+  </Accordion>
+  
+  <Accordion title="content-debug">
+    Allow printing sensitive message content for debugging:
+    
+    ```toml Cargo.toml
+    [dependencies]
+    openmls = { version = "0.8.1", features = ["content-debug"] }
+    ```
+    
+    <Warning>
+    Never enable this feature in production. It exposes sensitive message content.
+    </Warning>
+  </Accordion>
+  
+  <Accordion title="crypto-debug">
+    Allow printing cryptographic key material for debugging:
+    
+    ```toml Cargo.toml
+    [dependencies]
+    openmls = { version = "0.8.1", features = ["crypto-debug"] }
+    ```
+    
+    <Warning>
+    Never enable this feature in production. It exposes cryptographic secrets.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Complete example configurations
+
+### For development and testing
+
+```toml Cargo.toml
+[dependencies]
+openmls = { version = "0.8.1", features = ["test-utils"] }
+openmls_rust_crypto = "0.4"
+openmls_basic_credential = "0.4"
+openmls_memory_storage = "0.3"
+```
+
+### For production
+
+```toml Cargo.toml
+[dependencies]
+openmls = { version = "0.8.1", features = ["sqlite-provider", "fork-resolution"] }
+openmls_rust_crypto = "0.4"
+openmls_basic_credential = "0.4"
+```
+
+### For WebAssembly
+
+```toml Cargo.toml
+[dependencies]
+openmls = { version = "0.8.1", features = ["js"] }
+openmls_rust_crypto = "0.4"
+openmls_basic_credential = "0.4"
+openmls_memory_storage = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+```
+
+## Verify installation
+
+Create a simple test to verify your installation:
+
+```rust src/main.rs
+use openmls::prelude::*;
+
+fn main() {
+    println!("OpenMLS is installed!");
+    
+    // Test that we can reference the ciphersuite
+    let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    println!("Using ciphersuite: {:?}", ciphersuite);
+}
+```
+
+Run your test:
+
+```bash
+cargo run
+```
+
+You should see:
+
+```
+OpenMLS is installed!
+Using ciphersuite: MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+```
+
+## Next steps
+
+<Card title="Quickstart" icon="rocket" href="/quickstart">
+  Create your first MLS group with a complete working example
+</Card>

@@ -1,0 +1,394 @@
+---
+title: 'WebAssembly support'
+description: 'Build and run OpenMLS in WebAssembly environments'
+icon: 'globe'
+---
+
+OpenMLS can be compiled to WebAssembly (Wasm) and run in browsers or Node.js environments. However, Wasm doesn't provide certain required functionality, so OpenMLS needs access to JavaScript APIs for randomness and time.
+
+## Requirements
+
+OpenMLS requires two features not provided by WebAssembly itself:
+
+1. **Secure randomness** - Cryptographically secure random number generation
+2. **Current time** - Access to system time for various operations
+
+These must be provided by the JavaScript runtime (browser or Node.js) through the `web_sys` crate.
+
+<Note>
+Currently, OpenMLS WebAssembly support requires a JavaScript runtime with common Web APIs. Pure Wasm runtimes without JavaScript bindings are not yet supported.
+</Note>
+
+## Enabling WebAssembly support
+
+### Add the `js` feature
+
+Enable the `js` feature in your `Cargo.toml`:
+
+```toml
+[dependencies]
+openmls = { version = "0.8", features = ["js"] }
+openmls_traits = "0.5"
+openmls_rust_crypto = "0.5"
+openmls_basic_credential = "0.5"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+```
+
+The `js` feature enables:
+
+- WebAssembly compilation support
+- JavaScript randomness source via `getrandom`
+- JavaScript time APIs via `fluvio-wasm-timer`
+
+### Build configuration
+
+From the main OpenMLS `Cargo.toml`:
+
+```toml
+js = [
+    "dep:getrandom",
+    "dep:fluvio-wasm-timer",
+    
+    # enable randomness source
+    "getrandom/wasm_js",
+]
+```
+
+## Building for WebAssembly
+
+### Install wasm-pack
+
+```bash
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+```
+
+### Build your project
+
+```bash
+wasm-pack build --target web
+```
+
+This generates WebAssembly bindings in the `pkg/` directory.
+
+<Tip>
+Use `--target web` for browsers, `--target nodejs` for Node.js, or `--target bundler` for webpack/Rollup.
+</Tip>
+
+### Build targets
+
+```bash
+# For browsers
+wasm-pack build --target web
+
+# For Node.js
+wasm-pack build --target nodejs
+
+# For bundlers (webpack, Rollup, etc.)
+wasm-pack build --target bundler
+```
+
+## Example: OpenMLS Wasm wrapper
+
+The OpenMLS repository includes an experimental WebAssembly wrapper at `/workspace/source/openmls-wasm/`:
+
+```toml
+[package]
+name = "openmls-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2.84"
+openmls = { path = "../openmls", features = ["js"] }
+openmls_traits = { path = "../traits" }
+openmls_rust_crypto = { path = "../openmls_rust_crypto" }
+openmls_basic_credential = { path = "../basic_credential" }
+tls_codec = { workspace = true }
+
+# Required for WebAssembly randomness
+getrandom_old = { package = "getrandom", version = "0.2.15", features = ["js"] }
+```
+
+<Note>
+This wrapper is experimental and provides a minimal but useful set of bindings. Use it as a starting point for custom bindings with advanced features.
+</Note>
+
+## Using OpenMLS in the browser
+
+### Import the module
+
+```javascript
+import init, * as openmls from './pkg/openmls_wasm.js';
+
+await init();
+
+// OpenMLS is now ready to use
+const provider = openmls.create_provider();
+```
+
+### Create credentials and keys
+
+```javascript
+// Create basic credential
+const credential = openmls.create_basic_credential("Alice");
+
+// Generate signature keys
+const signatureKeys = openmls.generate_signature_keypair(ciphersuite);
+
+// Create key package
+const keyPackage = openmls.create_key_package(
+    ciphersuite,
+    credential,
+    signatureKeys
+);
+```
+
+### Create and manage groups
+
+```javascript
+// Create a group
+const group = openmls.create_group(
+    provider,
+    credential,
+    signatureKeys
+);
+
+// Add members
+const welcome = group.add_members([bobKeyPackage]);
+
+// Send messages
+const message = group.create_message("Hello, Bob!");
+```
+
+## Using OpenMLS in Node.js
+
+### Import the module
+
+```javascript
+const openmls = require('./pkg/openmls_wasm.js');
+
+// Use OpenMLS APIs
+const provider = openmls.create_provider();
+```
+
+### Example Node.js script
+
+```javascript
+const openmls = require('./pkg/openmls_wasm.js');
+
+async function main() {
+    // Initialize provider
+    const provider = openmls.create_provider();
+    
+    // Create credentials
+    const alice = openmls.create_basic_credential("Alice");
+    const aliceKeys = openmls.generate_signature_keypair(
+        openmls.Ciphersuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+    );
+    
+    // Create group
+    const group = openmls.create_group(provider, alice, aliceKeys);
+    
+    console.log("Group created with ID:", group.group_id());
+}
+
+main().catch(console.error);
+```
+
+## Randomness in WebAssembly
+
+The `getrandom` crate provides cryptographically secure randomness using JavaScript APIs:
+
+```rust
+// In Rust code (automatically handled by OpenMLS)
+use getrandom::getrandom;
+
+let mut buffer = [0u8; 32];
+getrandom(&mut buffer).expect("Failed to generate random bytes");
+```
+
+This uses:
+- **Browsers**: `window.crypto.getRandomValues()`
+- **Node.js**: `crypto.randomBytes()`
+
+<Warning>
+Ensure your JavaScript environment supports `crypto.getRandomValues()` (browsers) or `crypto.randomBytes()` (Node.js). Most modern environments do.
+</Warning>
+
+## Time in WebAssembly
+
+The `fluvio-wasm-timer` crate provides time functionality:
+
+```rust
+// Automatically handled by OpenMLS when js feature is enabled
+use std::time::{SystemTime, Duration};
+
+let now = SystemTime::now();
+let timestamp = now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+```
+
+This uses JavaScript's `Date.now()` API.
+
+## Performance considerations
+
+### Optimization level
+
+Build with optimizations for production:
+
+```toml
+[profile.release]
+opt-level = "z"     # Optimize for size
+lto = true          # Link-time optimization
+codegen-units = 1   # Better optimization
+panic = "abort"     # Smaller binary size
+```
+
+### Binary size
+
+Monitor WebAssembly binary size:
+
+```bash
+wasm-pack build --release
+ls -lh pkg/*.wasm
+```
+
+The experimental wrapper includes a size-checking script:
+
+```bash
+# From openmls-wasm directory
+./check-size.sh
+```
+
+<Tip>
+Use `wasm-opt` from the Binaryen toolkit to further reduce binary size:
+
+```bash
+wasm-opt -Oz -o optimized.wasm input.wasm
+```
+</Tip>
+
+## Limitations and considerations
+
+<AccordionGroup>
+  <Accordion title="JavaScript runtime required" icon="js">
+    OpenMLS Wasm currently requires JavaScript APIs for randomness and time. Pure Wasm environments without JavaScript are not supported.
+  </Accordion>
+  
+  <Accordion title="Binary size" icon="file">
+    The compiled Wasm binary can be large (several MB). Use optimization and compression techniques for production deployments.
+  </Accordion>
+  
+  <Accordion title="Performance" icon="gauge">
+    Wasm performance may be slower than native code, especially for cryptographic operations. Benchmark your specific use case.
+  </Accordion>
+  
+  <Accordion title="Threading" icon="bars-staggered">
+    Multi-threading support in Wasm is limited. OpenMLS's parallel features may not provide benefits in Wasm.
+  </Accordion>
+</AccordionGroup>
+
+## Storage in WebAssembly
+
+Use browser storage APIs for persistence:
+
+```javascript
+// Save key package to localStorage
+const keyPackageBytes = keyPackage.serialize();
+localStorage.setItem('keyPackage', JSON.stringify(Array.from(keyPackageBytes)));
+
+// Load key package from localStorage
+const storedBytes = JSON.parse(localStorage.getItem('keyPackage'));
+const keyPackage = openmls.deserialize_key_package(new Uint8Array(storedBytes));
+```
+
+For larger data, use IndexedDB:
+
+```javascript
+// Store group state in IndexedDB
+const db = await openDatabase();
+const tx = db.transaction('groups', 'readwrite');
+await tx.objectStore('groups').put({
+    id: group.group_id(),
+    state: group.serialize()
+});
+```
+
+## Testing WebAssembly builds
+
+Use `wasm-bindgen-test` for testing:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use wasm_bindgen_test::*;
+    
+    #[wasm_bindgen_test]
+    fn test_create_group() {
+        // Test code here
+    }
+}
+```
+
+Run tests:
+
+```bash
+wasm-pack test --headless --firefox
+wasm-pack test --headless --chrome
+```
+
+## Example: Complete WebAssembly application
+
+HTML:
+
+```html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>OpenMLS Demo</title>
+</head>
+<body>
+    <script type="module">
+        import init, * as openmls from './pkg/openmls_wasm.js';
+        
+        async function main() {
+            await init();
+            
+            const provider = openmls.create_provider();
+            const alice = openmls.create_basic_credential("Alice");
+            const aliceKeys = openmls.generate_signature_keypair(
+                openmls.Ciphersuite.MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519
+            );
+            
+            const group = openmls.create_group(provider, alice, aliceKeys);
+            console.log("Group created!", group.group_id());
+        }
+        
+        main().catch(console.error);
+    </script>
+</body>
+</html>
+```
+
+## Future improvements
+
+The OpenMLS WebAssembly wrapper is experimental. Planned improvements:
+
+- More comprehensive API bindings
+- Better error handling
+- TypeScript definitions
+- Storage provider implementations
+- Performance optimizations
+
+<Note>
+Contributions to the WebAssembly wrapper are welcome! See the repository at `/workspace/source/openmls-wasm/` for the current implementation.
+</Note>
+
+## Related
+
+- [wasm-bindgen documentation](https://rustwasm.github.io/wasm-bindgen/)
+- [wasm-pack guide](https://rustwasm.github.io/wasm-pack/)
+- Source: `/workspace/source/openmls-wasm/` for experimental wrapper
+- Source: `/workspace/source/book/src/user_manual/wasm.md` for reference

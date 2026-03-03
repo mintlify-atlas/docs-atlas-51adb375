@@ -1,0 +1,397 @@
+---
+title: Updating Key Material
+description: Update your own leaf node and key material in an MLS group
+---
+
+## Overview
+
+Update your own key material in the group. This operation creates a Commit that includes a path with new encryption keys and can optionally update your credential, capabilities, and extensions.
+
+## Self Update
+
+### Basic Update
+
+Update key material with default parameters:
+
+```rust
+use openmls::prelude::*;
+
+let leaf_node_params = LeafNodeParameters::default();
+
+let bundle = alice_group.self_update(
+    provider,
+    &signer,
+    leaf_node_params,
+)?;
+
+let commit = bundle.commit();
+let welcome = bundle.welcome();  // Some if there were pending Adds
+let group_info = bundle.group_info();
+
+// Send commit to group
+alice_group.merge_pending_commit(provider)?;
+```
+
+### Update with New Parameters
+
+Update credential, capabilities, or extensions:
+
+```rust
+let new_capabilities = Capabilities::builder()
+    .versions(vec![ProtocolVersion::Mls10])
+    .ciphersuites(vec![ciphersuite])
+    .extensions(vec![ExtensionType::ApplicationId])
+    .build();
+
+let new_extensions = Extensions::single(
+    Extension::ApplicationId(ApplicationIdExtension::new(b"my-app-id"))
+);
+
+let leaf_node_params = LeafNodeParameters::builder()
+    .with_capabilities(new_capabilities)
+    .with_extensions(new_extensions)
+    .build();
+
+let bundle = alice_group.self_update(
+    provider,
+    &signer,
+    leaf_node_params,
+)?;
+
+alice_group.merge_pending_commit(provider)?;
+```
+
+### Update Signature Key
+
+Update your signature public key (requires new signer):
+
+```rust
+// Generate new signature key pair
+let new_signature_keypair = SignatureKeyPair::new(
+    ciphersuite.signature_algorithm()
+)?;
+new_signature_keypair.store(provider.storage())?;
+
+let new_signer = NewSignerBundle {
+    signer: &new_signature_keypair,
+    new_public_key: new_signature_keypair.public().into(),
+};
+
+let leaf_node_params = LeafNodeParameters::builder()
+    .with_signature_public_key(new_signature_keypair.public().into())
+    .build();
+
+let bundle = alice_group.self_update_with_new_signer(
+    provider,
+    &old_signer,
+    new_signer,
+    leaf_node_params,
+)?;
+
+alice_group.merge_pending_commit(provider)?;
+```
+
+## Method Signatures
+
+### `self_update`
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Your current signature key
+</ParamField>
+
+<ParamField path="leaf_node_parameters" type="LeafNodeParameters" required>
+  New parameters for your leaf node
+</ParamField>
+
+**Returns:** `Result<CommitMessageBundle, SelfUpdateError>`
+
+The bundle contains:
+- Commit message
+- Optional Welcome (if there were pending Add proposals)
+- Optional GroupInfo
+
+**Location:** `openmls/src/group/mls_group/updates.rs:23`
+
+### `self_update_with_new_signer`
+
+Update including signature public key change.
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="old_signer" type="&impl Signer" required>
+  Your current signature key
+</ParamField>
+
+<ParamField path="new_signer" type="NewSignerBundle" required>
+  New signature key and public key
+</ParamField>
+
+<ParamField path="leaf_node_parameters" type="LeafNodeParameters" required>
+  New parameters (must include new signature public key)
+</ParamField>
+
+**Returns:** `Result<CommitMessageBundle, SelfUpdateError>`
+
+**Location:** `openmls/src/group/mls_group/updates.rs:62`
+
+### `propose_self_update`
+
+Create an Update proposal without committing.
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Your signature key
+</ParamField>
+
+<ParamField path="leaf_node_parameters" type="LeafNodeParameters" required>
+  New parameters for your leaf node
+</ParamField>
+
+**Returns:** `Result<(MlsMessageOut, ProposalRef), ProposeSelfUpdateError>`
+
+**Location:** `openmls/src/group/mls_group/updates.rs:148`
+
+## Leaf Node Parameters
+
+Configure what to update in your leaf node:
+
+```rust
+let params = LeafNodeParameters::builder()
+    .with_capabilities(capabilities)
+    .with_extensions(extensions)
+    .with_signature_public_key(public_key)  // Only with new_signer
+    .build();
+```
+
+<ParamField path="with_capabilities" type="Capabilities">
+  Update supported protocol versions, ciphersuites, extensions, and proposals
+</ParamField>
+
+<ParamField path="with_extensions" type="Extensions<LeafNode>">
+  Update leaf node extensions (e.g., ApplicationId)
+</ParamField>
+
+<ParamField path="with_signature_public_key" type="SignaturePublicKey">
+  Update signature public key (requires `self_update_with_new_signer`)
+</ParamField>
+
+## Complete Examples
+
+### Simple Key Rotation
+
+<Steps>
+  <Step title="Create update parameters">
+    ```rust
+    let leaf_node_params = LeafNodeParameters::default();
+    ```
+  </Step>
+
+  <Step title="Perform update">
+    ```rust
+    let bundle = alice_group.self_update(
+        provider,
+        &alice_signer,
+        leaf_node_params,
+    )?;
+    ```
+  </Step>
+
+  <Step title="Send and merge">
+    ```rust
+    let commit = bundle.commit();
+    delivery_service.send_to_group(alice_group.group_id(), commit)?;
+    
+    alice_group.merge_pending_commit(provider)?;
+    ```
+  </Step>
+</Steps>
+
+### Update Credential
+
+<Steps>
+  <Step title="Create new credential">
+    ```rust
+    let new_credential = BasicCredential::new(
+        b"alice@new-domain.example".to_vec()
+    )?;
+    let new_credential_with_key = CredentialWithKey {
+        credential: new_credential.into(),
+        signature_key: current_signature_public_key.into(),
+    };
+    ```
+  </Step>
+
+  <Step title="Build leaf parameters">
+    ```rust
+    // Note: Updating credential requires more complex setup
+    // You need to update both the credential and ensure
+    // the signature key matches
+    let leaf_node_params = LeafNodeParameters::builder()
+        // Set other parameters
+        .build();
+    ```
+  </Step>
+
+  <Step title="Update and merge">
+    ```rust
+    let bundle = alice_group.self_update(
+        provider,
+        &alice_signer,
+        leaf_node_params,
+    )?;
+    
+    alice_group.merge_pending_commit(provider)?;
+    ```
+  </Step>
+</Steps>
+
+### Propose Update (Two-Step)
+
+<Steps>
+  <Step title="Create update proposal">
+    ```rust
+    let (proposal_msg, proposal_ref) = alice_group.propose_self_update(
+        provider,
+        &alice_signer,
+        leaf_node_params,
+    )?;
+    ```
+  </Step>
+
+  <Step title="Send proposal">
+    ```rust
+    delivery_service.send_to_group(
+        alice_group.group_id(),
+        proposal_msg,
+    )?;
+    ```
+  </Step>
+
+  <Step title="Commit later">
+    ```rust
+    // Someone (possibly you) commits the proposal
+    let (commit, welcome, group_info) = alice_group
+        .commit_to_pending_proposals(provider, &alice_signer)?;
+    
+    alice_group.merge_pending_commit(provider)?;
+    ```
+  </Step>
+</Steps>
+
+## Processing Updates
+
+Other members process your update:
+
+```rust
+// Bob receives and processes Alice's update
+let processed = bob_group.process_message(provider, commit_msg)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = 
+    processed.into_content()
+{
+    // Check for update proposals
+    for update in staged_commit.update_proposals() {
+        println!("Member {} updated their leaf", update.sender());
+    }
+    
+    // Merge the commit
+    bob_group.merge_staged_commit(provider, *staged_commit)?;
+}
+```
+
+## Error Handling
+
+```rust
+match alice_group.self_update(provider, &signer, params) {
+    Ok(bundle) => {
+        // Success
+    }
+    Err(SelfUpdateError::GroupStateError(state_error)) => {
+        match state_error {
+            MlsGroupStateError::PendingCommit => {
+                // Must merge or clear pending commit first
+            }
+            MlsGroupStateError::UseAfterEviction => {
+                // Can't update after being removed
+            }
+        }
+    }
+    Err(SelfUpdateError::CreateCommitError(commit_error)) => {
+        // Failed to create commit
+    }
+    Err(e) => eprintln!("Error updating: {}", e),
+}
+```
+
+## Advanced Usage
+
+### Using CommitBuilder
+
+```rust
+let bundle = alice_group
+    .commit_builder()
+    .leaf_node_parameters(leaf_node_params)
+    .consume_proposal_store(true)  // Include pending proposals
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+    .stage_commit(provider)?;
+
+let commit = bundle.commit();
+alice_group.merge_pending_commit(provider)?;
+```
+
+### Update with Other Proposals
+
+```rust
+// Update yourself and add members in one commit
+let bundle = alice_group
+    .commit_builder()
+    .leaf_node_parameters(leaf_node_params)
+    .propose_adds(key_packages.iter().cloned())
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+    .stage_commit(provider)?;
+```
+
+## Important Notes
+
+<Warning>
+  **Signature Key Update**: When updating your signature public key, you MUST use `self_update_with_new_signer()` and the new public key in `LeafNodeParameters` must match the `NewSignerBundle`.
+</Warning>
+
+<Info>
+  **Automatic Path**: `self_update()` always includes a path in the commit, updating your encryption keys even if you only change other parameters.
+</Info>
+
+<Info>
+  **Extension Support**: The updated leaf node must support all group context extensions. The update will fail if it doesn't.
+</Info>
+
+<Info>
+  **Pending Proposals**: `self_update()` consumes all pending proposals by default. Use CommitBuilder for more control.
+</Info>
+
+## When to Update
+
+Update your key material when:
+
+- **Regular Rotation**: Periodically for forward secrecy
+- **Credential Change**: When your identity information changes
+- **Capabilities Change**: When you want to support new features
+- **Key Compromise**: If you suspect your keys are compromised
+- **Policy Requirement**: When group policy requires updates
+
+## Next Steps
+
+- [Add members](/api/group/add-members) to the group
+- [Remove members](/api/group/remove-members) from the group
+- [Leave the group](/api/group/leave) when done

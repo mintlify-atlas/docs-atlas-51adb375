@@ -1,0 +1,365 @@
+---
+title: 'Benchmarks'
+description: 'Performance measurements and benchmark results for OpenMLS'
+---
+
+OpenMLS includes comprehensive benchmarks to measure performance across different operations, group sizes, and scenarios. This page describes the benchmark methodology and provides guidance on running your own benchmarks.
+
+## Running benchmarks
+
+OpenMLS uses Criterion.rs for benchmarking core operations:
+
+<Steps>
+  <Step title="Run the benchmark suite">
+    ```bash
+    cargo bench --bench benchmark
+    ```
+    
+    This runs benchmarks for all supported ciphersuites across multiple crypto providers.
+  </Step>
+
+  <Step title="Run specific benchmarks">
+    ```bash
+    # Benchmark only key package creation
+    cargo bench --bench benchmark -- KeyPackage
+    
+    # Benchmark with specific provider
+    cargo bench --bench benchmark -- RustCrypto
+    ```
+  </Step>
+
+  <Step title="View results">
+    Results are saved in `target/criterion/` with detailed HTML reports.
+  </Step>
+</Steps>
+
+<Tip>
+Benchmark results vary based on hardware. Run benchmarks on your target platform for accurate performance characteristics.
+</Tip>
+
+## Benchmark categories
+
+The benchmark suite measures the following operations:
+
+### Key package operations
+
+**Key package bundle creation** - Measures the time to generate a complete key package including credential and signature:
+
+```rust
+let key_package = KeyPackage::builder()
+    .build(ciphersuite, provider, &signer, credential_with_key)?;
+```
+
+This operation is performed when:
+- Joining a new group
+- Pre-generating key packages for future invitations
+- Refreshing expired key packages
+
+### Group creation operations
+
+**Create welcome message** - Measures commit and welcome generation when adding the first member:
+
+```rust
+let (commit, welcome, _) = alice_group.add_members(
+    provider,
+    &alice_signer,
+    &[bob_key_package],
+)?;
+```
+
+Includes:
+- Commit creation
+- Welcome message encryption
+- Ratchet tree updates
+- Pending commit merge
+
+### Join operations
+
+**Join group from welcome** - Measures processing a welcome message and creating group state:
+
+```rust
+let processed_welcome = ProcessedWelcome::new_from_welcome(
+    provider,
+    join_config,
+    welcome,
+)?;
+
+let group = JoinBuilder::new(provider, processed_welcome)
+    .with_ratchet_tree(ratchet_tree)
+    .replace_old_group()
+    .build()?
+    .into_group(provider)?;
+```
+
+This is the operation performed by new members when joining a group.
+
+### Update operations
+
+**Create commit** - Measures self-update commit creation and merge:
+
+```rust
+let commit = group.self_update(
+    provider,
+    &signer,
+    LeafNodeParameters::default(),
+)?;
+
+group.merge_pending_commit(provider)?;
+```
+
+Updates are critical for forward secrecy in MLS.
+
+## Large group benchmarks
+
+For testing with realistic group sizes, use the `large-groups` example:
+
+<CodeGroup>
+```bash Generate test groups
+# Generate groups of various sizes
+cargo run --example large-groups --release -- \
+  --write \
+  --groups 2 5 10 25 50 100 \
+  --setup commit-after-join
+```
+
+```bash Run benchmarks
+# Benchmark all generated groups
+cargo run --example large-groups --release
+
+# Benchmark specific group size
+cargo run --example large-groups --release -- \
+  --groups 50
+```
+</CodeGroup>
+
+### Setup variants
+
+The large group benchmark supports different tree states:
+
+<Tabs>
+  <Tab title="Bare">
+    Members join but don't commit afterward. Results in a minimally-updated tree.
+    
+    ```bash
+    --setup bare
+    ```
+  </Tab>
+
+  <Tab title="Commit after join">
+    Each member sends an update immediately after joining. Creates a fully-updated tree.
+    
+    ```bash
+    --setup commit-after-join
+    ```
+  </Tab>
+
+  <Tab title="Commit to full group">
+    All members added first, then everyone commits. Useful for testing update performance at scale.
+    
+    ```bash
+    --setup commit-to-full-group
+    ```
+  </Tab>
+</Tabs>
+
+## Measured operations
+
+The large group benchmark measures these real-world operations:
+
+<AccordionGroup>
+  <Accordion title="Adder" icon="user-plus">
+    Time for an existing member to create a commit that adds a new member to the group.
+    
+    **Scales with:** Group size, tree depth
+  </Accordion>
+
+  <Accordion title="Updater" icon="arrows-rotate">
+    Time for a member to create and merge a self-update commit.
+    
+    **Scales with:** Tree depth, path length
+  </Accordion>
+
+  <Accordion title="Remover" icon="user-minus">
+    Time for a member to create a commit that removes another member.
+    
+    **Scales with:** Group size, tree complexity
+  </Accordion>
+
+  <Accordion title="Process update" icon="download">
+    Time for a member to process and merge an update commit from another member.
+    
+    **Scales with:** Path length, tree state
+  </Accordion>
+</AccordionGroup>
+
+## Real-world scenarios
+
+OpenMLS benchmarks are designed around common usage patterns:
+
+### Stable group
+
+Many private groups follow this model:
+
+1. Group created by user P1
+2. P1 invites N other users
+3. Group used for messaging between N+1 members
+4. Every X messages, one user sends an update
+
+**Performance characteristics:**
+- Fast message encryption/decryption
+- Infrequent commit operations
+- Predictable resource usage
+
+### Somewhat stable group
+
+Models company or team-wide groups:
+
+1. Group created and initially populated
+2. Regular messaging between members
+3. Every X messages, one user sends an update
+4. Every Y messages, Q users are added
+5. Every Z messages, R users are removed
+
+**Performance characteristics:**
+- Moderate commit frequency
+- Tree gradually changes structure
+- Need to handle both additions and removals
+
+### High fluctuation group
+
+Models public groups or real-time collaboration:
+
+1. Group exists with varying membership
+2. Users frequently join and leave
+3. Very small Y and Z (frequent member changes)
+
+**Performance characteristics:**
+- High commit frequency
+- Many welcome messages
+- Tree structure changes rapidly
+- Important to batch operations
+
+## Benchmark configuration
+
+The benchmark suite is configured in `openmls/Cargo.toml`:
+
+```toml
+[[bench]]
+name = "benchmark"
+harness = false
+```
+
+### Benchmark parameters
+
+Default configuration:
+- **Iterations:** 1000 (for stable measurements)
+- **Warmup:** 5 iterations
+- **Ciphersuites:** All supported ciphersuites
+- **Providers:** RustCrypto and libcrux providers
+
+## Interpreting results
+
+Benchmark output shows timing for each operation:
+
+```
+2 Members
+Adder:          234 μs
+Updater:        189 μs
+Remover:        256 μs
+Process update: 145 μs
+
+10 Members
+Adder:          567 μs
+Updater:        423 μs
+Remover:        612 μs
+Process update: 389 μs
+```
+
+<Info>
+Performance scales with group size, but the relationship is sublinear due to the tree structure. A 5x increase in group size typically results in less than 3x increase in operation time.
+</Info>
+
+## Performance tracking
+
+For historical performance data and comparisons across versions, see the [OpenMLS Performance Spreadsheet](https://docs.google.com/spreadsheets/d/1nZv8lpT28JctDVo4ARBLZCKcIdvo-h8cIyN3_dIedFU).
+
+## Extreme scenarios
+
+Some benchmarks test edge cases:
+
+### Blank node patterns
+
+Testing trees where every second leaf is blank (after removals):
+
+```rust
+// Simulate: Add 2N members, then remove every other one
+for i in 0..n {
+    // Add member i*2 and i*2+1
+    // Remove member i*2+1
+}
+```
+
+This tests performance with non-optimal tree structure.
+
+### Long-offline device
+
+Simulate a device catching up after being offline:
+
+```rust
+// Generate N messages
+let messages = generate_messages(n);
+
+// Process all at once
+for msg in messages {
+    group.process_message(provider, msg)?;
+}
+```
+
+Measures bulk message processing performance.
+
+## Custom benchmarks
+
+Create application-specific benchmarks using Criterion:
+
+```rust
+use criterion::{criterion_group, criterion_main, Criterion};
+
+fn my_benchmark(c: &mut Criterion) {
+    c.bench_function("my operation", |b| {
+        b.iter(|| {
+            // Your operation here
+        });
+    });
+}
+
+criterion_group!(benches, my_benchmark);
+criterion_main!(benches);
+```
+
+<Warning>
+Always run benchmarks in release mode (`--release`) for accurate performance measurements. Debug builds can be 10-100x slower.
+</Warning>
+
+## Optimization checklist
+
+Use benchmarks to validate these optimizations:
+
+- [ ] Selected optimal ciphersuite for your platform
+- [ ] Chosen appropriate crypto provider
+- [ ] Configured wire format policy for your transport
+- [ ] Implemented efficient storage backend
+- [ ] Batching membership changes when possible
+- [ ] Tuned update frequency for your use case
+- [ ] Measured performance on target hardware
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Optimization guide" icon="gauge-high" href="/performance/optimization">
+    Learn how to optimize OpenMLS for your use case.
+  </Card>
+
+  <Card title="Source code" icon="github" href="https://github.com/openmls/openmls/tree/main/openmls/benches">
+    View benchmark source code on GitHub.
+  </Card>
+</CardGroup>

@@ -1,0 +1,174 @@
+---
+title: MLS protocol
+description: Learn about the Messaging Layer Security (MLS) protocol and its implementation in OpenMLS
+---
+
+The Messaging Layer Security (MLS) protocol provides end-to-end encryption for messaging applications. OpenMLS is a Rust implementation of MLS as specified in [RFC 9420](https://datatracker.ietf.org/doc/html/rfc9420).
+
+## What is MLS?
+
+MLS is a security layer for group messaging that provides confidentiality, integrity, and authentication for messages exchanged within a group. It is designed to be efficient even for large groups and supports asynchronous communication.
+
+The protocol enables:
+
+- **End-to-end encryption**: Messages are encrypted on the sender's device and can only be decrypted by intended recipients
+- **Forward secrecy**: Compromising current keys does not compromise past messages
+- **Post-compromise security**: The protocol can recover security after a key compromise
+- **Asynchronous group management**: Members can be added to groups without all participants being online simultaneously
+
+## Protocol version
+
+OpenMLS currently supports MLS 1.0 (protocol version `mls10`):
+
+```rust
+pub enum ProtocolVersion {
+    Mls10 = 1,
+    Other(u16),
+}
+```
+
+The protocol version is set automatically when creating groups and key packages:
+
+```rust
+use openmls::prelude::*;
+
+// Protocol version is set to Mls10 by default
+let version = ProtocolVersion::default(); // ProtocolVersion::Mls10
+```
+
+## Core protocol components
+
+### Groups
+
+An MLS group is a collection of clients that can securely exchange messages. Each group has:
+
+- **Group ID**: A unique identifier chosen at group creation (typically random)
+- **Group epoch**: A counter incremented with each group state change
+- **Group members**: Clients represented by their leaf nodes in the ratchet tree
+- **Group context**: Agreed-upon state including extensions and configuration
+
+```rust
+use openmls::prelude::*;
+
+// Group ID is typically random for uniqueness
+pub struct GroupId {
+    value: VLBytes,
+}
+
+// Group epoch increments with each valid commit
+pub struct GroupEpoch(u64);
+```
+
+### Ratchet tree
+
+The ratchet tree (also called TreeSync) is a binary tree structure that maintains the group's cryptographic state. Each member occupies a leaf position, and the tree is used to efficiently distribute group keys.
+
+Key properties:
+- Leaf nodes contain member credentials and public keys
+- Parent nodes contain shared secrets for subgroups
+- The root contains the shared secret for the entire group
+- Tree updates enable forward secrecy and post-compromise security
+
+### Messages
+
+MLS defines several message types:
+
+- **Application messages**: Encrypted content sent between group members
+- **Proposals**: Suggested changes to the group (add/remove members, update keys)
+- **Commits**: Batch group state changes by applying one or more proposals
+- **Welcome messages**: Initialize new members with the current group state
+
+## Message flow
+
+<Steps>
+  <Step title="Client creates key packages">
+    Clients generate and publish key packages containing their public keys and credentials.
+  </Step>
+  
+  <Step title="Group creation">
+    A client creates a new group, becoming its first member.
+  </Step>
+  
+  <Step title="Adding members">
+    The group creator adds members by committing Add proposals that reference their key packages.
+  </Step>
+  
+  <Step title="Welcome messages">
+    New members receive Welcome messages containing the group state and secrets.
+  </Step>
+  
+  <Step title="Secure communication">
+    Members exchange encrypted application messages within the group.
+  </Step>
+  
+  <Step title="Group evolution">
+    Members propose and commit changes (adds, removes, updates) to evolve the group state.
+  </Step>
+</Steps>
+
+## Security properties
+
+### Message protection
+
+MLS provides:
+- **Confidentiality**: Only group members can read messages
+- **Authentication**: Recipients can verify the sender's identity
+- **Integrity**: Messages cannot be modified without detection
+
+### Forward secrecy
+
+When a member updates their keys or new members join, old keying material is deleted. This ensures that compromising current keys cannot decrypt past messages. See the [forward secrecy documentation](/security/forward-secrecy) for details.
+
+### Post-compromise security
+
+If a member's keys are compromised, the group can recover security by having that member send an update proposal with fresh randomness that an attacker cannot predict.
+
+## Group epochs
+
+The group epoch is a counter that increments with each valid commit:
+
+```rust
+impl GroupEpoch {
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+}
+```
+
+Epochs ensure:
+- Messages from different epochs cannot be confused
+- Receivers can detect and reject replayed messages
+- The group has a clear linear history of state changes
+
+<Note>
+  Every commit increments the group epoch by 1, creating a new cryptographic epoch with fresh keys derived from the updated ratchet tree.
+</Note>
+
+## MLS architecture
+
+The [MLS architecture document](https://www.rfc-editor.org/rfc/rfc9750.html) defines abstract services that support the protocol:
+
+- **Authentication Service**: Validates the binding between credentials and client identities
+- **Delivery Service**: Routes MLS messages between clients
+
+OpenMLS focuses on the core MLS protocol, while applications implement these supporting services according to their requirements.
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Learn about OpenMLS's modular architecture and provider traits
+  </Card>
+  
+  <Card title="Ciphersuites" icon="lock" href="/concepts/ciphersuites">
+    Explore supported cryptographic algorithms and configurations
+  </Card>
+  
+  <Card title="Credentials" icon="id-card" href="/concepts/credentials">
+    Understand how client identities are represented
+  </Card>
+  
+  <Card title="Key packages" icon="key" href="/concepts/key-packages">
+    Learn about pre-published key material for asynchronous group operations
+  </Card>
+</CardGroup>

@@ -1,0 +1,383 @@
+---
+title: ParentNode
+description: Parent nodes in the MLS ratchet tree
+---
+
+A `ParentNode` represents an internal node in the MLS ratchet tree. Parent nodes are located at odd indices and contain the shared encryption key for a subtree of members, along with metadata for tree synchronization.
+
+## Overview
+
+Parent nodes:
+- Are located at odd indices in the tree array
+- Contain HPKE public keys for path encryption
+- Track parent hash for tree validation
+- Maintain lists of unmerged leaves
+- Do not have signatures (unlike leaf nodes)
+
+## Structure
+
+```rust
+pub struct ParentNode {
+    encryption_key: EncryptionKey,
+    parent_hash: VLBytes,
+    unmerged_leaves: UnmergedLeaves,
+}
+```
+
+<ParamField path="encryption_key" type="EncryptionKey">
+  HPKE public key for this parent node
+</ParamField>
+
+<ParamField path="parent_hash" type="VLBytes">
+  Hash of the parent node's parent for validation
+</ParamField>
+
+<ParamField path="unmerged_leaves" type="UnmergedLeaves">
+  Sorted list of leaf indices that haven't been merged into this node's path
+</ParamField>
+
+## Creating Parent Nodes
+
+Parent nodes are typically created internally during path derivation:
+
+```rust
+let parent_node = ParentNode::from(encryption_key);
+```
+
+This creates a parent node with:
+- The given encryption key
+- Empty parent hash
+- Empty unmerged leaves list
+
+## Accessing Parent Node Data
+
+### public_key()
+
+Returns the HPKE public key:
+
+```rust
+pub fn public_key(&self) -> &HpkePublicKey
+```
+
+<ResponseField name="return" type="&HpkePublicKey">
+  Reference to the public key bytes
+</ResponseField>
+
+### encryption_key()
+
+Returns the encryption key structure:
+
+```rust
+pub fn encryption_key(&self) -> &EncryptionKey
+```
+
+<ResponseField name="return" type="&EncryptionKey">
+  Reference to the encryption key
+</ResponseField>
+
+### parent_hash()
+
+Returns the parent hash:
+
+```rust
+pub fn parent_hash(&self) -> &[u8]
+```
+
+<ResponseField name="return" type="&[u8]">
+  Parent hash bytes
+</ResponseField>
+
+### unmerged_leaves()
+
+Returns the list of unmerged leaf indices:
+
+```rust
+pub fn unmerged_leaves(&self) -> &[LeafNodeIndex]
+```
+
+<ResponseField name="return" type="&[LeafNodeIndex]">
+  Sorted slice of unmerged leaf indices
+</ResponseField>
+
+## Path Derivation
+
+Parent nodes are created as part of update path derivation:
+
+```rust
+let (path, update_path_nodes, keypairs, commit_secret) = 
+    ParentNode::derive_path(
+        crypto,
+        ciphersuite,
+        path_secret,
+        path_indices,
+    )?;
+```
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto" required>
+  Crypto provider for key derivation
+</ParamField>
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  Ciphersuite to use
+</ParamField>
+
+<ParamField path="path_secret" type="PathSecret" required>
+  Initial path secret for derivation
+</ParamField>
+
+<ParamField path="path_indices" type="Vec<ParentNodeIndex>" required>
+  Indices of parent nodes in the path
+</ParamField>
+
+<ResponseField name="return" type="PathDerivationResult">
+  Tuple of (parent nodes with indices, plain update nodes, keypairs, commit secret)
+</ResponseField>
+
+## Parent Hash Operations
+
+### Computing Parent Hash
+
+Compute the parent hash for this node:
+
+```rust
+let hash = parent_node.compute_parent_hash(
+    crypto,
+    ciphersuite,
+    original_child_resolution,
+)?;
+```
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto" required>
+  Crypto provider
+</ParamField>
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  Ciphersuite for hashing
+</ParamField>
+
+<ParamField path="original_child_resolution" type="&[u8]" required>
+  Serialized original child resolution
+</ParamField>
+
+<ResponseField name="return" type="Vec<u8>">
+  Computed parent hash
+</ResponseField>
+
+### Setting Parent Hash
+
+```rust
+parent_node.set_parent_hash(hash);
+```
+
+<ParamField path="hash" type="Vec<u8>" required>
+  New parent hash value
+</ParamField>
+
+## Unmerged Leaves Management
+
+Unmerged leaves track which members don't have the private key for this parent node.
+
+### Adding Unmerged Leaf
+
+```rust
+parent_node.add_unmerged_leaf(leaf_index);
+```
+
+<ParamField path="leaf_index" type="LeafNodeIndex" required>
+  Leaf index to add to unmerged list
+</ParamField>
+
+The leaf is inserted in sorted order automatically.
+
+### Setting Unmerged Leaves
+
+```rust
+parent_node.set_unmerged_leaves(vec![leaf0, leaf1, leaf2]);
+```
+
+<ParamField path="leaves" type="Vec<LeafNodeIndex>" required>
+  Complete list of unmerged leaves (must be sorted)
+</ParamField>
+
+## UpdatePathNode (Encrypted)
+
+When sending updates, parent nodes are encrypted into `UpdatePathNode` structures:
+
+```rust
+pub struct UpdatePathNode {
+    pub public_key: EncryptionKey,
+    pub encrypted_path_secrets: Vec<HpkeCiphertext>,
+}
+```
+
+This is created from `PlainUpdatePathNode`:
+
+```rust
+let update_path_node = plain_node.encrypt(
+    crypto,
+    ciphersuite,
+    public_keys,
+    group_context,
+)?;
+```
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto" required>
+  Crypto provider
+</ParamField>
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  Ciphersuite to use
+</ParamField>
+
+<ParamField path="public_keys" type="&[EncryptionKey]" required>
+  Public keys to encrypt to (resolution of the copath)
+</ParamField>
+
+<ParamField path="group_context" type="&[u8]" required>
+  Serialized group context for AEAD
+</ParamField>
+
+<ResponseField name="return" type="UpdatePathNode">
+  Encrypted update path node
+</ResponseField>
+
+## Example: Inspecting Parent Node
+
+```rust
+use openmls::prelude::*;
+
+fn inspect_parent_node(parent: &ParentNode, index: ParentNodeIndex) {
+    println!("Parent node at index {}", index.u32());
+    
+    // Show encryption key
+    let key_bytes = parent.public_key();
+    println!("Public key: {} bytes", key_bytes.len());
+    
+    // Show parent hash
+    let parent_hash = parent.parent_hash();
+    println!("Parent hash: {} bytes", parent_hash.len());
+    
+    // Show unmerged leaves
+    let unmerged = parent.unmerged_leaves();
+    if !unmerged.is_empty() {
+        println!("Unmerged leaves: {:?}", 
+                 unmerged.iter()
+                        .map(|idx| idx.u32())
+                        .collect::<Vec<_>>());
+    } else {
+        println!("All leaves merged");
+    }
+}
+```
+
+## Example: Processing Update Path
+
+```rust
+use openmls::prelude::*;
+
+// Derive a path from a path secret
+let path_secret = PathSecret::from(secret);
+
+let path_indices = vec![
+    ParentNodeIndex::new(1),
+    ParentNodeIndex::new(3),
+    ParentNodeIndex::new(7),
+];
+
+let (parent_nodes, plain_nodes, keypairs, commit_secret) = 
+    ParentNode::derive_path(
+        provider.crypto(),
+        ciphersuite,
+        path_secret,
+        path_indices,
+    )?;
+
+// parent_nodes: Vec<(ParentNodeIndex, ParentNode)>
+for (index, parent) in parent_nodes {
+    println!("Derived parent at {}", index.u32());
+}
+
+// plain_nodes: Vec<PlainUpdatePathNode> - can be encrypted
+// keypairs: Vec<EncryptionKeyPair> - private keys to store
+// commit_secret: CommitSecret - used in key schedule
+```
+
+## UnmergedLeaves Structure
+
+The unmerged leaves list is maintained as a sorted vector:
+
+```rust
+pub struct UnmergedLeaves {
+    list: Vec<LeafNodeIndex>,
+}
+```
+
+### Properties
+- Always kept in sorted order
+- Binary search used for insertion
+- Duplicate prevention during insertion
+
+### Creating UnmergedLeaves
+
+```rust
+let unmerged = UnmergedLeaves::new(); // Empty list
+
+// From vector (must be sorted)
+let unmerged = UnmergedLeaves::try_from(vec![leaf0, leaf1])?;
+```
+
+## Blank Parent Nodes
+
+Blank parent nodes represent empty positions:
+
+```rust
+let blank_parent = TreeSyncParentNode::blank();
+```
+
+Blank nodes:
+- Have no encryption key
+- Have no parent hash
+- Have empty unmerged leaves
+- Are represented as `None` in exported trees
+
+## Wire Format
+
+Parent nodes are serialized as:
+
+```c
+struct {
+    HPKEPublicKey encryption_key;
+    opaque parent_hash<V>;
+    uint32 unmerged_leaves<V>;
+} ParentNode;
+```
+
+## Tree Navigation
+
+Parent nodes are accessed by index:
+
+```rust
+// Get parent by index
+if let Some(parent) = tree_sync.parent(parent_index) {
+    // Process parent node
+}
+
+// Iterate all parents
+for (index, parent) in tree_sync.full_parents() {
+    println!("Parent {}: {:?}", index.u32(), parent.public_key());
+}
+```
+
+## Security Considerations
+
+1. **Parent Hash Validation**: Always validate parent hashes when importing trees
+2. **Unmerged Leaves**: Track carefully to ensure proper key distribution
+3. **Path Secrets**: Never expose path secrets; only use through secure derivation
+4. **Blank Nodes**: Handle blank nodes correctly in path operations
+
+## See Also
+
+- [LeafNode](/api/tree/leaf-node) - Leaf node structure
+- [RatchetTree](/api/tree/ratchet-tree) - Complete tree structure
+- [TreeSync](https://www.rfc-editor.org/rfc/rfc9420.html#section-7) - RFC 9420 TreeSync
+- [Update Paths](https://www.rfc-editor.org/rfc/rfc9420.html#section-7.4) - Path encryption

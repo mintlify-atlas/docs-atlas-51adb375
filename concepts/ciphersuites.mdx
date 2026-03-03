@@ -1,0 +1,276 @@
+---
+title: Ciphersuites
+description: Explore the cryptographic algorithm combinations supported by OpenMLS
+---
+
+A ciphersuite is a combination of cryptographic algorithms that MLS uses for all its operations. OpenMLS supports the mandatory ciphersuite from the MLS specification plus additional recommended options.
+
+## Supported ciphersuites
+
+OpenMLS currently supports three ciphersuites:
+
+<CardGroup cols={1}>
+  <Card title="MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519" icon="star">
+    **Mandatory-to-implement (MTI)** ciphersuite using Curve25519 and Ed25519
+    
+    - **HPKE KEM**: X25519 Diffie-Hellman
+    - **HPKE KDF**: HKDF-SHA256  
+    - **HPKE AEAD**: AES-128-GCM
+    - **Hash**: SHA-256
+    - **Signature**: Ed25519
+  </Card>
+  
+  <Card title="MLS_128_DHKEMP256_AES128GCM_SHA256_P256" icon="shield">
+    NIST P-256 based ciphersuite
+    
+    - **HPKE KEM**: P-256 Diffie-Hellman
+    - **HPKE KDF**: HKDF-SHA256
+    - **HPKE AEAD**: AES-128-GCM  
+    - **Hash**: SHA-256
+    - **Signature**: ECDSA with P-256
+  </Card>
+  
+  <Card title="MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519" icon="lock">
+    ChaCha20-Poly1305 variant for platforms without AES acceleration
+    
+    - **HPKE KEM**: X25519 Diffie-Hellman
+    - **HPKE KDF**: HKDF-SHA256
+    - **HPKE AEAD**: ChaCha20-Poly1305
+    - **Hash**: SHA-256  
+    - **Signature**: Ed25519
+  </Card>
+</CardGroup>
+
+## Using ciphersuites
+
+Ciphersuites are represented by the `Ciphersuite` enum from the `openmls_traits` crate:
+
+```rust
+use openmls::prelude::*;
+
+// Use the mandatory-to-implement ciphersuite
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+```
+
+### Choosing a ciphersuite
+
+When creating a key package or group, you must specify a ciphersuite:
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use openmls_basic_credential::SignatureKeyPair;
+
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+let provider = OpenMlsRustCrypto::default();
+
+// Create credential
+let credential = BasicCredential::new("alice".into());
+let signature_keys = SignatureKeyPair::new(
+    ciphersuite.signature_algorithm()
+)?;
+
+let credential_with_key = CredentialWithKey {
+    credential: credential.into(),
+    signature_key: signature_keys.public().into(),
+};
+
+// Create key package with chosen ciphersuite
+let key_package = KeyPackage::builder()
+    .build(
+        ciphersuite,
+        &provider,
+        &signature_keys,
+        credential_with_key,
+    )?;
+```
+
+## Ciphersuite properties
+
+Each ciphersuite provides methods to query its algorithms:
+
+```rust
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+// Get the signature algorithm
+let sig_scheme = ciphersuite.signature_algorithm();
+// SignatureScheme::ED25519
+
+// Get the HPKE configuration
+let hpke_config = ciphersuite.hpke_config();
+// HpkeConfig { kem, kdf, aead }
+
+// Get the hash algorithm
+let hash_alg = ciphersuite.hash_algorithm();
+// HashType::Sha256
+
+// Get AEAD algorithm
+let aead_alg = ciphersuite.aead_algorithm();
+// AeadType::Aes128Gcm
+```
+
+## Cryptographic components
+
+### HPKE (Hybrid Public Key Encryption)
+
+HPKE is used for encrypting group secrets to individual members. Each ciphersuite specifies:
+
+- **KEM (Key Encapsulation Mechanism)**: How ephemeral shared secrets are established
+- **KDF (Key Derivation Function)**: How keys are derived from shared secrets
+- **AEAD**: How data is encrypted with the derived keys
+
+### Signature schemes
+
+Signature schemes authenticate MLS messages and key packages:
+
+- **Ed25519**: Edwards-curve Digital Signature Algorithm (EdDSA) with Curve25519
+- **ECDSA P-256**: Elliptic Curve Digital Signature Algorithm with NIST P-256
+
+The signature scheme must match the ciphersuite:
+
+```rust
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+// This matches - Ed25519 is the signature scheme for this ciphersuite
+let signature_keys = SignatureKeyPair::new(
+    ciphersuite.signature_algorithm() // Ed25519
+)?;
+
+// This would fail when creating a key package - mismatched signature scheme
+let wrong_keys = SignatureKeyPair::new(
+    SignatureScheme::ECDSA_SECP256R1_SHA256
+)?; // Error: CiphersuiteSignatureSchemeMismatch
+```
+
+### Hash functions
+
+Hash functions are used throughout MLS for:
+
+- Key derivation (in the KDF)
+- Transcript hashing for message ordering
+- Creating key package references
+- Deriving confirmation tags
+
+All currently supported ciphersuites use SHA-256.
+
+### AEAD algorithms
+
+AEAD (Authenticated Encryption with Associated Data) protects message confidentiality and integrity:
+
+- **AES-128-GCM**: Hardware-accelerated on most modern platforms
+- **ChaCha20-Poly1305**: Software-efficient alternative for platforms without AES acceleration
+
+## Multi-ciphersuite support
+
+Clients can support multiple ciphersuites by publishing separate key packages:
+
+```rust
+use openmls::prelude::*;
+
+let supported_ciphersuites = vec![
+    Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+    Ciphersuite::MLS_128_DHKEMP256_AES128GCM_SHA256_P256,
+];
+
+let mut key_packages = Vec::new();
+
+for ciphersuite in supported_ciphersuites {
+    // Create signature keys for this ciphersuite
+    let signature_keys = SignatureKeyPair::new(
+        ciphersuite.signature_algorithm()
+    )?;
+    
+    let credential_with_key = CredentialWithKey {
+        credential: credential.clone(),
+        signature_key: signature_keys.public().into(),
+    };
+    
+    // Create key package for this ciphersuite
+    let key_package = KeyPackage::builder()
+        .build(
+            ciphersuite,
+            &provider,
+            &signature_keys,
+            credential_with_key,
+        )?;
+    
+    key_packages.push(key_package);
+}
+```
+
+This allows the client to join groups using any of the supported ciphersuites.
+
+## Ciphersuite negotiation
+
+When creating a group, the creator chooses the ciphersuite. All members must support it:
+
+1. The group creator selects a ciphersuite
+2. Members are added using key packages that match that ciphersuite  
+3. All group operations use the same ciphersuite
+4. The ciphersuite cannot be changed after group creation
+
+<Warning>
+  All key packages added to a group must use the same ciphersuite as the group. Adding a key package with a different ciphersuite will fail validation.
+</Warning>
+
+## Capabilities and ciphersuites
+
+Clients advertise supported ciphersuites in their key package capabilities:
+
+```rust
+use openmls::prelude::*;
+
+let capabilities = Capabilities::new(
+    None, // default protocol versions
+    Some(&[
+        Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+        Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+    ]),
+    None, // default extensions
+    None, // default proposal types  
+    None, // default credential types
+);
+
+let key_package = KeyPackage::builder()
+    .leaf_node_capabilities(capabilities)
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+```
+
+## Security considerations
+
+### Choosing the MTI ciphersuite
+
+For maximum interoperability, use the mandatory-to-implement ciphersuite:
+
+```rust
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+```
+
+All MLS implementations must support this ciphersuite, ensuring your application can communicate with any compliant implementation.
+
+### Performance considerations
+
+- **X25519/Ed25519**: Excellent performance on most platforms
+- **P-256**: Required for some compliance frameworks (e.g., FIPS)
+- **ChaCha20-Poly1305**: Better performance than AES-GCM on platforms without hardware AES acceleration
+
+### Security level
+
+All supported ciphersuites provide 128-bit security, which is appropriate for most applications and expected to remain secure for the foreseeable future.
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="Key packages" icon="key" href="/concepts/key-packages">
+    Learn how ciphersuites are specified in key packages
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how cryptographic providers implement ciphersuite operations
+  </Card>
+</CardGroup>

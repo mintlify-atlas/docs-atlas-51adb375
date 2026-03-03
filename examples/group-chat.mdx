@@ -1,0 +1,403 @@
+---
+title: "Multi-Party Group Chat"
+description: "Build a group chat application with multiple participants using OpenMLS"
+---
+
+This example demonstrates how to create a multi-party group chat where members can join dynamically, send messages, and remove participants.
+
+## Overview
+
+We'll implement:
+- Creating a group with an initial member
+- Adding multiple members to the group
+- Sending messages to all group members
+- Removing members from the group
+- Processing incoming messages
+
+<Steps>
+
+### Set up the project
+
+Create a new project with the required dependencies:
+
+```toml
+[dependencies]
+openmls = "1.0"
+openmls_rust_crypto = "0.4"
+openmls_basic_credential = "0.3"
+```
+
+### Create a User structure
+
+Define a `User` struct to manage each participant:
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use openmls_basic_credential::SignatureKeyPair;
+use std::collections::HashMap;
+
+const CIPHERSUITE: Ciphersuite = 
+    Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+struct User {
+    name: String,
+    credential_with_key: CredentialWithKey,
+    signer: SignatureKeyPair,
+    provider: OpenMlsRustCrypto,
+    group: Option<MlsGroup>,
+}
+
+impl User {
+    fn new(name: &str) -> Self {
+        let provider = OpenMlsRustCrypto::default();
+        let credential = BasicCredential::new(name.as_bytes().to_vec());
+        let signature_keys = SignatureKeyPair::new(
+            CIPHERSUITE.signature_algorithm()
+        )
+        .expect("Error generating signature keys");
+
+        // Store signature keys
+        signature_keys
+            .store(provider.storage())
+            .expect("Error storing signature keys");
+
+        let credential_with_key = CredentialWithKey {
+            credential: credential.into(),
+            signature_key: signature_keys.public().into(),
+        };
+
+        Self {
+            name: name.to_string(),
+            credential_with_key,
+            signer: signature_keys,
+            provider,
+            group: None,
+        }
+    }
+
+    fn create_key_package(&self) -> KeyPackageBundle {
+        KeyPackage::builder()
+            .build(
+                CIPHERSUITE,
+                &self.provider,
+                &self.signer,
+                self.credential_with_key.clone(),
+            )
+            .unwrap()
+    }
+}
+```
+
+### Create a group
+
+The first user creates a new group:
+
+```rust
+impl User {
+    fn create_group(&mut self, group_id: &[u8]) {
+        let group_config = MlsGroupCreateConfig::builder()
+            .use_ratchet_tree_extension(true)
+            .build();
+
+        let mls_group = MlsGroup::new_with_group_id(
+            &self.provider,
+            &self.signer,
+            &group_config,
+            GroupId::from_slice(group_id),
+            self.credential_with_key.clone(),
+        )
+        .expect("Failed to create MlsGroup");
+
+        self.group = Some(mls_group);
+        println!("{} created group", self.name);
+    }
+}
+```
+
+### Add members to the group
+
+Implement functionality to invite new members:
+
+```rust
+impl User {
+    fn invite_member(
+        &mut self,
+        key_package: &KeyPackage,
+    ) -> (MlsMessageOut, MlsMessageOut) {
+        let group = self.group.as_mut()
+            .expect("User is not part of a group");
+
+        let (commit_message, welcome, _group_info) = group
+            .add_members(
+                &self.provider,
+                &self.signer,
+                &[key_package],
+            )
+            .expect("Failed to add member");
+
+        // Merge the pending commit locally
+        group
+            .merge_pending_commit(&self.provider)
+            .expect("Error merging pending commit");
+
+        println!("{} invited a new member", self.name);
+        (commit_message, welcome)
+    }
+
+    fn join_group(&mut self, welcome: Welcome, ratchet_tree: RatchetTree) {
+        let group_config = MlsGroupJoinConfig::builder()
+            .use_ratchet_tree_extension(true)
+            .build();
+
+        let mls_group = StagedWelcome::new_from_welcome(
+            &self.provider,
+            &group_config,
+            welcome,
+            Some(ratchet_tree.into()),
+        )
+        .expect("Failed to create staged join")
+        .into_group(&self.provider)
+        .expect("Failed to create group");
+
+        self.group = Some(mls_group);
+        println!("{} joined the group", self.name);
+    }
+}
+```
+
+### Send and receive messages
+
+Implement message sending and processing:
+
+```rust
+impl User {
+    fn send_message(&mut self, message: &str) -> MlsMessageOut {
+        let group = self.group.as_mut()
+            .expect("User is not part of a group");
+
+        let message_out = group
+            .create_message(
+                &self.provider,
+                &self.signer,
+                message.as_bytes(),
+            )
+            .expect("Error creating message");
+
+        println!("{} sent: {}", self.name, message);
+        message_out
+    }
+
+    fn process_message(
+        &mut self,
+        protocol_message: ProtocolMessage,
+    ) -> Option<String> {
+        let group = self.group.as_mut()
+            .expect("User is not part of a group");
+
+        let processed_message = group
+            .process_message(&self.provider, protocol_message)
+            .expect("Error processing message");
+
+        match processed_message.into_content() {
+            ProcessedMessageContent::ApplicationMessage(app_message) => {
+                let message = String::from_utf8(
+                    app_message.into_bytes()
+                ).unwrap();
+                println!("{} received: {}", self.name, message);
+                Some(message)
+            }
+            ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+                group
+                    .merge_staged_commit(&self.provider, *staged_commit)
+                    .expect("Error merging staged commit");
+                println!("{} processed group update", self.name);
+                None
+            }
+            _ => None,
+        }
+    }
+}
+```
+
+### Remove members
+
+Add functionality to remove members from the group:
+
+```rust
+impl User {
+    fn remove_member(
+        &mut self,
+        member_index: LeafNodeIndex,
+    ) -> MlsMessageOut {
+        let group = self.group.as_mut()
+            .expect("User is not part of a group");
+
+        let (commit_message, _welcome, _group_info) = group
+            .remove_members(
+                &self.provider,
+                &self.signer,
+                &[member_index],
+            )
+            .expect("Failed to remove member");
+
+        group
+            .merge_pending_commit(&self.provider)
+            .expect("Error merging pending commit");
+
+        println!("{} removed a member", self.name);
+        commit_message
+    }
+
+    fn get_members(&self) -> Vec<String> {
+        let group = self.group.as_ref()
+            .expect("User is not part of a group");
+
+        group
+            .members()
+            .map(|member| {
+                let credential = BasicCredential::try_from(
+                    member.credential
+                ).unwrap();
+                String::from_utf8(
+                    credential.identity().to_vec()
+                ).unwrap()
+            })
+            .collect()
+    }
+}
+```
+
+### Put it all together
+
+Create a complete group chat example:
+
+```rust
+fn main() {
+    // Create three users
+    let mut alice = User::new("Alice");
+    let mut bob = User::new("Bob");
+    let mut charlie = User::new("Charlie");
+
+    // Alice creates a group
+    alice.create_group(b"My Group Chat");
+
+    // Bob and Charlie create key packages
+    let bob_key_package = bob.create_key_package();
+    let charlie_key_package = charlie.create_key_package();
+
+    // Alice invites Bob
+    let (commit_bob, welcome_bob) = alice.invite_member(
+        bob_key_package.key_package()
+    );
+
+    // Bob joins
+    let welcome = welcome_bob.into_welcome().unwrap();
+    let ratchet_tree = alice.group.as_ref().unwrap()
+        .export_ratchet_tree();
+    bob.join_group(welcome, ratchet_tree.clone());
+
+    // Alice invites Charlie
+    let (commit_charlie, welcome_charlie) = alice.invite_member(
+        charlie_key_package.key_package()
+    );
+
+    // Bob processes the commit (Charlie joined)
+    let protocol_msg = commit_charlie.clone()
+        .try_into_protocol_message()
+        .unwrap();
+    bob.process_message(protocol_msg);
+
+    // Charlie joins
+    let welcome = welcome_charlie.into_welcome().unwrap();
+    let ratchet_tree = alice.group.as_ref().unwrap()
+        .export_ratchet_tree();
+    charlie.join_group(welcome, ratchet_tree);
+
+    // Alice sends a message
+    let message = alice.send_message("Hello everyone!");
+    let protocol_msg = message.clone()
+        .try_into_protocol_message()
+        .unwrap();
+    bob.process_message(protocol_msg);
+    
+    let protocol_msg = message.try_into_protocol_message().unwrap();
+    charlie.process_message(protocol_msg);
+
+    // List members
+    println!("Group members: {:?}", alice.get_members());
+}
+```
+
+</Steps>
+
+## Message Flow
+
+In a group chat, messages follow this pattern:
+
+1. **Sender** creates a message using `create_message()`
+2. **Delivery service** distributes the message to all group members
+3. **Recipients** process the message using `process_message()`
+
+```rust
+// Sender
+let message_out = group.create_message(provider, signer, b"Hello");
+
+// After network transmission...
+// Recipient
+let protocol_message = message_in.try_into_protocol_message()?;
+let processed = group.process_message(provider, protocol_message)?;
+```
+
+## Group Operations
+
+### Adding Members
+
+```rust
+let (commit, welcome, _) = group.add_members(
+    provider,
+    signer,
+    &[key_package],
+)?;
+group.merge_pending_commit(provider)?;
+```
+
+### Removing Members
+
+```rust
+let (commit, _, _) = group.remove_members(
+    provider,
+    signer,
+    &[member_index],
+)?;
+group.merge_pending_commit(provider)?;
+```
+
+### Processing Updates
+
+```rust
+let processed = group.process_message(provider, protocol_message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::ApplicationMessage(msg) => {
+        // Handle application message
+    }
+    ProcessedMessageContent::StagedCommitMessage(commit) => {
+        group.merge_staged_commit(provider, *commit)?;
+    }
+    _ => {}
+}
+```
+
+## Best Practices
+
+- Always merge pending commits after group modifications
+- Process all commit messages before sending new messages
+- Export and share the ratchet tree when inviting new members
+- Handle message ordering carefully to avoid epoch mismatches
+
+## Next Steps
+
+- Implement [server integration](/examples/server-integration) for message delivery
+- Add [key rotation](/examples/key-rotation) for enhanced security
+- Explore [custom storage](/examples/custom-storage) for persistence

@@ -1,0 +1,618 @@
+---
+title: Frequently Asked Questions
+description: Common questions about MLS protocol and OpenMLS implementation
+---
+
+# Frequently Asked Questions
+
+Answers to common questions about the MLS protocol and OpenMLS library.
+
+## General MLS Questions
+
+<AccordionGroup>
+  <Accordion title="What is MLS (Messaging Layer Security)?">
+    MLS is an IETF-standardized security layer (RFC 9420) for end-to-end encrypting messages in groups of size two to many. It provides:
+    
+    - **Confidentiality**: Messages are only readable by group members
+    - **Authentication**: Members can verify message senders
+    - **Forward Secrecy**: Past messages remain secure if keys are compromised
+    - **Post-Compromise Security**: Security is restored after key material is compromised
+    - **Efficient Group Operations**: Optimized for adding/removing members
+    
+    MLS is designed for messaging applications, conferencing systems, and any scenario requiring secure group communication.
+  </Accordion>
+
+  <Accordion title="How does MLS differ from Signal Protocol or OMEMO?">
+    **Signal Protocol** and **OMEMO** are designed for one-to-one or small group messaging:
+    - They use pairwise sessions between participants
+    - Group operations scale poorly with group size
+    
+    **MLS** is optimized for groups:
+    - Uses a shared tree structure (ratchet tree) for efficient key derivation
+    - Add/remove operations are O(log n) instead of O(n)
+    - Better suited for large groups and frequent membership changes
+    - Standardized by IETF with multiple implementations
+  </Accordion>
+
+  <Accordion title="What is a ratchet tree in MLS?">
+    The ratchet tree is a binary tree data structure where:
+    
+    - **Leaves** represent group members
+    - **Nodes** contain key material used to derive encryption keys
+    - **Root** provides the group secret shared by all members
+    
+    The tree structure enables efficient updates:
+    - Updates affect only O(log n) nodes instead of all members
+    - Provides forward secrecy and post-compromise security
+    - Allows efficient key derivation for all group members
+  </Accordion>
+
+  <Accordion title="What are epochs in MLS?">
+    An **epoch** is a period during which the group uses the same cryptographic state:
+    
+    - Each commit advances the group to a new epoch
+    - Epoch numbers increment sequentially (0, 1, 2, ...)
+    - Messages from old epochs cannot decrypt messages from new epochs
+    - Each epoch has its own encryption secrets
+    
+    Epochs provide:
+    - Clear security boundaries
+    - Forward secrecy (old epoch keys are deleted)
+    - Ordering guarantees for group operations
+  </Accordion>
+</AccordionGroup>
+
+## OpenMLS Library Questions
+
+<AccordionGroup>
+  <Accordion title="What platforms and languages does OpenMLS support?">
+    OpenMLS is written in Rust and can be used:
+    
+    - **Native Rust** applications
+    - **C/C++** via FFI bindings
+    - **WebAssembly** for browser and Node.js (with `js` feature)
+    - **Mobile platforms** (iOS, Android) through FFI
+    
+    Language bindings:
+    - Official Rust API
+    - Community-maintained bindings for other languages
+    
+    <Note>
+      When compiling to WebAssembly, use the `js` feature flag for platform compatibility.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Which ciphersuites are supported?">
+    OpenMLS supports the mandatory and recommended ciphersuites from RFC 9420:
+    
+    **Mandatory:**
+    - `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`
+    - `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519`
+    
+    **Recommended:**
+    - `MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448`
+    - `MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448`
+    - `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`
+    - `MLS_256_DHKEMP384_AES256GCM_SHA384_P384`
+    - `MLS_256_DHKEMP521_AES256GCM_SHA512_P521`
+    
+    **Experimental:**
+    - XWing hybrid post-quantum KEM (with libcrux provider)
+    
+    <Warning>
+      Experimental ciphersuites are not standardized and may change. Do not use in production.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="What is a crypto provider in OpenMLS?">
+    OpenMLS uses a **provider architecture** to separate cryptographic operations from protocol logic:
+    
+    **Available providers:**
+    - `openmls_rust_crypto`: Pure Rust implementation using RustCrypto
+    - `openmls_libcrux_crypto`: Formally verified cryptography via Libcrux
+    
+    **Provider traits:**
+    - `OpenMlsCrypto`: Cryptographic operations (AEAD, hashing, signatures)
+    - `OpenMlsRand`: Random number generation
+    - `StorageProvider`: Persistent storage for groups and keys
+    
+    This design allows:
+    - Platform-specific optimizations
+    - HSM integration for key operations
+    - Custom storage backends
+  </Accordion>
+
+  <Accordion title="How do I store and retrieve groups?">
+    OpenMLS uses the `StorageProvider` trait for persistence:
+    
+    ```rust
+    use openmls_memory_storage::MemoryStorage;
+    use openmls::prelude::*;
+    
+    // Create provider with storage
+    let provider = OpenMlsRustCrypto::default();
+    
+    // Groups are automatically saved during operations
+    let group = MlsGroup::new(
+        &provider,
+        &signer,
+        &mls_group_config,
+        credential_with_key,
+    )?;
+    
+    // Load existing group
+    let loaded = MlsGroup::load(
+        &provider.storage(),
+        &group_id,
+    )?;
+    ```
+    
+    **Built-in storage:**
+    - `MemoryStorage`: In-memory (not persistent)
+    - `SqliteStorage`: SQLite-backed persistence
+    
+    **Custom storage:**
+    Implement the `StorageProvider` trait for your database.
+  </Accordion>
+
+  <Accordion title="What are KeyPackages and how long are they valid?">
+    A **KeyPackage** is a pre-published public key bundle that allows others to add you to a group:
+    
+    ```rust
+    let key_package = KeyPackage::builder()
+        .lifetime(Lifetime::new(
+            not_before,
+            not_after,
+        ))
+        .build(
+            crypto_config,
+            &provider,
+            &signer,
+            credential_with_key,
+        )?;
+    ```
+    
+    **Lifetime considerations:**
+    - Set expiration based on your rotation policy (e.g., 90 days)
+    - Upload new KeyPackages before old ones expire
+    - Use `LastResortExtension` for KeyPackages that can be reused
+    
+    **Best practices:**
+    - Generate multiple KeyPackages (one per expected group join)
+    - Delete KeyPackage after use unless it has `LastResortExtension`
+    - Rotate regularly to maintain security
+  </Accordion>
+
+  <Accordion title="Can I use the same KeyPackage to join multiple groups?">
+    **By default: No.** Each KeyPackage should be used once and then deleted.
+    
+    **Exception: LastResortExtension**
+    
+    ```rust
+    use openmls::prelude::*;
+    
+    let key_package = KeyPackage::builder()
+        .leaf_node_extensions(Extensions::single(
+            Extension::LastResort,
+        ))
+        .build(/* ... */)?;
+    ```
+    
+    With `LastResortExtension`:
+    - The KeyPackage can be reused for multiple groups
+    - The encryption keypair is not deleted after use
+    - Useful for always-available KeyPackages
+    
+    <Warning>
+      Reusing KeyPackages without `LastResortExtension` will cause errors when trying to join subsequent groups.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Group Operations
+
+<AccordionGroup>
+  <Accordion title="What's the difference between proposals and commits?">
+    **Proposals** suggest changes to the group:
+    - Add a member
+    - Remove a member
+    - Update own key material
+    - Modify group context extensions
+    
+    **Commits** apply proposals and advance the epoch:
+    - Can include multiple proposals
+    - Only one commit per epoch succeeds
+    - Generates new encryption keys
+    - Produces Welcome messages for new members
+    
+    **Workflow:**
+    ```rust
+    // Step 1: Create proposals (optional)
+    let proposal = group.propose_add_member(
+        &provider,
+        &signer,
+        &key_package,
+    )?;
+    
+    // Step 2: Commit proposals (required)
+    let (commit, welcome, _) = group.commit_to_pending_proposals(
+        &provider,
+        &signer,
+    )?;
+    
+    // Step 3: Others process the commit
+    group.process_message(&provider, commit)?;
+    ```
+  </Accordion>
+
+  <Accordion title="How do I handle commit conflicts?">
+    **Commit conflicts** occur when multiple members create commits for the same epoch:
+    
+    ```rust
+    match group.process_message(&provider, protocol_message) {
+        Ok(ProcessedMessage::StagedCommitMessage(staged)) => {
+            // This commit won - merge it
+            group.merge_staged_commit(&provider, *staged)?;
+        },
+        Err(ProcessMessageError::ValidationError(
+            ValidationError::WrongEpoch
+        )) => {
+            // Conflict: our commit lost
+            // Clear our pending commit and retry
+            group.clear_pending_commit(&provider.storage())?;
+            
+            // Recreate proposals and try again
+            let (commit, welcome, _) = group.add_members(
+                &provider,
+                &signer,
+                &[key_package],
+            )?;
+        },
+        Err(e) => return Err(e),
+    }
+    ```
+    
+    **Best practices:**
+    - Implement retry logic for commit conflicts
+    - Use a coordination service for large groups
+    - Consider proposal-only mode for non-admin members
+  </Accordion>
+
+  <Accordion title="What are external commits and when should I use them?">
+    **External commits** allow joining a group without an invitation:
+    
+    ```rust
+    // Get public group info (from server or existing member)
+    let group_info = /* ... */;
+    
+    // Join via external commit
+    let (group, commit, _) = MlsGroup::external_commit_builder(
+        group_info,
+        None, // no ratchet tree
+        credential_with_key,
+    )
+    .build(&provider, &signer)?;
+    
+    // Send commit to group
+    ```
+    
+    **Use cases:**
+    - Rejoining after being removed
+    - Adding yourself to a public group
+    - Recovery from lost state
+    
+    **Requirements:**
+    - Group must allow external commits (via `ExternalSendersExtension`)
+    - You need access to current `GroupInfo`
+    
+    <Note>
+      External commits advance the epoch, so all existing members must process your commit.
+    </Note>
+  </Accordion>
+
+  <Accordion title="How do I handle members who go offline?">
+    MLS is **asynchronous** - members don't need to be online simultaneously:
+    
+    **For message sending:**
+    - Messages are encrypted for current group state
+    - Offline members receive messages when they come online
+    - Use your delivery service to queue messages
+    
+    **For group changes:**
+    - Commits advance the epoch immediately
+    - Offline members must process all missed commits in order
+    - Old epoch messages are buffered
+    
+    **Best practices:**
+    ```rust
+    // Process all pending messages in order
+    for message in pending_messages {
+        match group.process_message(&provider, message) {
+            Ok(ProcessedMessage::StagedCommitMessage(staged)) => {
+                group.merge_staged_commit(&provider, *staged)?;
+            },
+            Ok(ProcessedMessage::ApplicationMessage(app_msg)) => {
+                // Handle application message
+            },
+            Err(e) => {
+                // Log error but continue processing
+                eprintln!("Error processing message: {:?}", e);
+            }
+        }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Security and Best Practices
+
+<AccordionGroup>
+  <Accordion title="How does forward secrecy work in MLS?">
+    **Forward secrecy** ensures that compromised keys don't decrypt past messages:
+    
+    **Mechanisms:**
+    1. **Epoch-based key rotation**: Each commit generates new encryption keys
+    2. **Key deletion**: Old epoch keys are deleted after use
+    3. **Ratchet tree updates**: Members update their tree position over time
+    
+    **Best practices:**
+    ```rust
+    // Regular updates maintain forward secrecy
+    if should_update() {
+        let (commit, _, _) = group.self_update(
+            &provider,
+            &signer,
+            LeafNodeParameters::default(),
+        )?;
+    }
+    ```
+    
+    **Update frequency:**
+    - After sending N messages
+    - On a time schedule (e.g., daily)
+    - When security posture changes
+  </Accordion>
+
+  <Accordion title="What is post-compromise security?">
+    **Post-compromise security** (PCS) allows recovery from key compromise:
+    
+    **How it works:**
+    - After your key is compromised, perform an update
+    - The update introduces fresh randomness unknown to the attacker
+    - After all other members commit, your security is restored
+    
+    **Recovery steps:**
+    ```rust
+    // 1. Detect compromise (application-specific)
+    if key_possibly_compromised() {
+        // 2. Immediately update
+        let (commit, _, _) = group.self_update(
+            &provider,
+            &new_signer, // New signing key
+            LeafNodeParameters::default(),
+        )?;
+        
+        // 3. Wait for all members to commit
+        // After everyone has committed, PCS is restored
+    }
+    ```
+    
+    **Timeline:**
+    - Immediate: Attacker can't send messages as you
+    - After your update: Forward secrecy for future messages
+    - After all members update: Full PCS restored
+  </Accordion>
+
+  <Accordion title="Should I validate all group members' credentials?">
+    **Yes, always validate credentials** before trusting group members:
+    
+    ```rust
+    // When processing a commit that adds members
+    if let ProcessedMessage::StagedCommitMessage(staged) = processed {
+        // Check new members
+        for member in staged.add_proposals() {
+            let credential = member.credential();
+            
+            // Validate credential against your trust model
+            if !is_trusted_credential(credential) {
+                // Reject the commit
+                return Err("Untrusted credential");
+            }
+        }
+        
+        // Merge if all checks pass
+        group.merge_staged_commit(&provider, *staged)?;
+    }
+    ```
+    
+    **Validation strategies:**
+    - **X.509 certificates**: Verify against trusted CAs
+    - **Basic credentials**: Check against allowlist
+    - **Custom credentials**: Application-specific validation
+    
+    <Warning>
+      MLS authenticates that credentials are correctly signed, but YOU must decide if you trust those credentials.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="How should I handle key material and secrets?">
+    **Security best practices:**
+    
+    1. **Use secure storage:**
+    ```rust
+    // Use platform keychain/keystore for sensitive data
+    impl StorageProvider for SecureStorage {
+        // Store encryption keys in platform keychain
+        // Store group state in encrypted database
+    }
+    ```
+    
+    2. **Delete old key material:**
+    ```rust
+    // OpenMLS automatically deletes old epoch keys
+    // Ensure your storage provider actually deletes data
+    fn delete<V: Entity>(&self, key: &[u8]) -> Result<(), Self::Error> {
+        // Securely wipe the data
+        self.secure_delete(key)
+    }
+    ```
+    
+    3. **Protect signing keys:**
+    - Store in HSM or secure enclave if available
+    - Never log or transmit private keys
+    - Use separate keys for different purposes
+    
+    4. **Handle exported secrets carefully:**
+    ```rust
+    let exported = group.export_secret(
+        &provider.crypto(),
+        "label",
+        &[],
+        32,
+    )?;
+    // Use exported secret
+    // Then securely zero it
+    use zeroize::Zeroize;
+    exported.zeroize();
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Why am I getting 'UnableToDecrypt' errors?">
+    Common causes:
+    
+    1. **Out-of-order message processing:**
+    ```rust
+    // Process commits BEFORE application messages from same epoch
+    messages.sort_by_key(|m| m.epoch());
+    ```
+    
+    2. **Missed commits:**
+    - You must process ALL commits in order
+    - Request missing messages from server
+    
+    3. **Wrong group state:**
+    - Ensure you're using the correct group instance
+    - Check group ID matches
+    
+    4. **Storage issues:**
+    - Verify secret tree is persisted correctly
+    - Check encryption keypairs are available
+    
+    See the [troubleshooting guide](/resources/troubleshooting) for detailed solutions.
+  </Accordion>
+
+  <Accordion title="How do I debug MLS protocol errors?">
+    **Enable logging:**
+    ```rust
+    use tracing_subscriber;
+    
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .init();
+    ```
+    
+    **Check error details:**
+    ```rust
+    match group.process_message(&provider, msg) {
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
+            // Many errors include context
+            match e {
+                ProcessMessageError::ValidationError(v) => {
+                    eprintln!("Validation failed: {:?}", v);
+                },
+                _ => {}
+            }
+        },
+        Ok(msg) => { /* ... */ }
+    }
+    ```
+    
+    **Verify message format:**
+    ```rust
+    // Parse message to check structure
+    let protocol_message = ProtocolMessage::tls_deserialize(&mut bytes.as_slice())?;
+    println!("Message type: {:?}", protocol_message);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Extensions and Advanced Features
+
+<AccordionGroup>
+  <Accordion title="What MLS extensions does OpenMLS support?">
+    **RFC 9420 extensions:**
+    - `ApplicationId`: Application-specific identifiers
+    - `RatchetTree`: Include full tree in Welcome
+    - `RequiredCapabilities`: Enforce capability requirements
+    - `ExternalPub`: Public key for external senders
+    - `ExternalSenders`: Allow specific external senders
+    - `LastResort`: Reusable KeyPackages
+    
+    **Draft extensions** (behind `extensions-draft-08` feature):
+    - `SafeExporter`: Secure context binding for exporters
+    - `AppEphemeral`: Ephemeral application data
+    - `SelfRemove`: Members can remove themselves
+    
+    **GREASE support** (v0.8.0+):
+    - Automatic handling of unknown extensions
+    - `with_grease()` to add random GREASE values
+    
+    **Custom extensions:**
+    ```rust
+    let extension = Extension::Unknown(
+        0xff00, // Custom extension type
+        custom_data.into(),
+    );
+    ```
+  </Accordion>
+
+  <Accordion title="How do I use custom proposals?">
+    **Define custom proposal:**
+    ```rust
+    use openmls::prelude::*;
+    
+    // Create custom proposal
+    let custom_proposal = Proposal::Other(
+        ProposalType::Other(0xff00), // Custom type
+        custom_data.into(),
+    );
+    
+    // Send as external proposal
+    let external_proposal = ExternalProposal::new(
+        custom_proposal,
+        group_id,
+        epoch,
+        &signer,
+        SenderExtensionIndex::new(0),
+    )?;
+    ```
+    
+    **Handle in commits:**
+    ```rust
+    // Custom proposals appear in staged commits
+    if let ProcessedMessage::StagedCommitMessage(staged) = processed {
+        for proposal in staged.queued_proposals() {
+            if let Proposal::Other(proposal_type, data) = proposal.proposal() {
+                // Handle your custom proposal
+                handle_custom_proposal(data)?;
+            }
+        }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Still Have Questions?
+
+If your question isn't answered here:
+
+- Check the [API documentation](https://docs.rs/openmls)
+- Review the [troubleshooting guide](/resources/troubleshooting)
+- Search [GitHub issues](https://github.com/openmls/openmls/issues)
+- Ask on [GitHub Discussions](https://github.com/openmls/openmls/discussions)
+- Read the [MLS RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html)

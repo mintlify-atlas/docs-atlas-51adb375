@@ -1,0 +1,343 @@
+---
+title: Migration Guides
+description: Version migration guides for upgrading OpenMLS
+---
+
+# Migration Guides
+
+This guide helps you migrate between major versions of OpenMLS, highlighting breaking changes and providing upgrade instructions.
+
+## Migrating to 0.8.0
+
+### GREASE Support
+
+Version 0.8.0 introduces GREASE (Generate Random Extensions And Sustain Extensibility) support as defined in RFC 9420 Section 13.5.
+
+**Changes:**
+- `ProposalType`, `ExtensionType`, and `CredentialType` enums now include a `Grease(u16)` variant
+- New `is_grease()` methods are available on GREASE-capable types
+- Use `Capabilities::with_grease()` or `CapabilitiesBuilder::with_grease()` to inject random GREASE values
+
+```rust
+use openmls::prelude::*;
+
+// Add GREASE values to capabilities
+let capabilities = Capabilities::default().with_grease();
+```
+
+### Group Storage Changes
+
+Creating new `MlsGroup` instances now fails if a group with the same `GroupId` already exists in storage.
+
+**Migration:**
+
+```rust
+// Old behavior: silently replaced existing groups
+let group = MlsGroup::new(/* ... */);
+
+// New behavior: fails if group exists
+// Option 1: Delete existing group first
+provider.storage().delete_group(&group_id)?;
+let group = MlsGroup::new(/* ... */);
+
+// Option 2: Use replace_old_group builder option
+let group = MlsGroupBuilder::new()
+    .with_group_id(group_id)
+    .replace_old_group(true)
+    .build(/* ... */)?;
+```
+
+### AppEphemeral and AppAck Changes
+
+The `AppAck` proposal has been replaced with the `AppAck` object, which is now conveyed inside an `AppEphemeral` proposal (behind the `extensions-draft-08` feature flag).
+
+```rust
+#[cfg(feature = "extensions-draft-08")]
+{
+    // Use AppEphemeral proposal with AppAck object
+    let app_ack = AppAck::new(/* ... */);
+    let proposal = Proposal::AppEphemeral(app_ack);
+}
+```
+
+### Swap Members API
+
+New `swap_members()` method allows replacing members in a group:
+
+```rust
+let (messages, welcome) = group.swap_members(
+    &provider,
+    &signer,
+    members_to_remove,
+    key_packages_to_add,
+)?;
+```
+
+---
+
+## Migrating to 0.7.0
+
+### CommitBuilder Introduction
+
+Version 0.7.0 introduces the `CommitBuilder` for more flexible commit creation.
+
+**Before:**
+```rust
+let (commit, welcome, _) = group.add_members(
+    &provider,
+    &signer,
+    &[key_package],
+)?;
+```
+
+**After:**
+```rust
+use openmls::group::CommitBuilder;
+
+let (commit, welcome, _) = group.commit_builder()
+    .add_member(key_package)?
+    .build(&provider, &signer)?;
+```
+
+### Self Update with New Signer
+
+New functionality to rotate signature keys during updates:
+
+```rust
+let (commit, welcome, _) = group.self_update_with_new_signer(
+    &provider,
+    &new_signer,
+    leaf_node_params,
+)?;
+```
+
+### Error Type Changes
+
+Processing messages now returns different error types:
+
+- `ProcessMessageError` for `MlsGroup`
+- `PublicProcessMessageError` for `PublicGroup`
+
+```rust
+match group.process_message(&provider, protocol_message) {
+    Ok(processed_message) => { /* ... */ },
+    Err(ProcessMessageError::ValidationError(e)) => { /* ... */ },
+    Err(ProcessMessageError::StorageError(e)) => { /* ... */ },
+    // ... other variants
+}
+```
+
+### External Commit Builder
+
+The `join_by_external_commit` method is deprecated in favor of `external_commit_builder`:
+
+**Before:**
+```rust
+let (group, message, _) = MlsGroup::join_by_external_commit(
+    &provider,
+    &signer,
+    /* ... */
+)?;
+```
+
+**After:**
+```rust
+let (group, message, _) = MlsGroup::external_commit_builder(
+    verifiable_group_info,
+    /* ... */
+)
+.build(&provider, &signer)?;
+```
+
+---
+
+## Migrating to 0.6.0
+
+### Storage Provider Trait
+
+The `OpenMlsKeyStore` trait has been replaced with `StorageProvider`.
+
+**Migration:**
+
+```rust
+// Old
+use openmls_traits::key_store::OpenMlsKeyStore;
+
+// New
+use openmls_traits::storage::StorageProvider;
+
+struct MyStorage;
+
+impl StorageProvider for MyStorage {
+    // Implement required methods
+}
+```
+
+### Serde Removal from MlsGroup
+
+`MlsGroup` and `PublicGroup` no longer implement `serde` traits. Use the storage provider instead:
+
+```rust
+// Save group to storage
+group.save(&provider.storage())?;
+
+// Load group from storage
+let group = MlsGroup::load(&provider.storage(), &group_id)?;
+```
+
+### AAD Handling Changes
+
+AAD is no longer persisted and must be set before each API call:
+
+**Before:**
+```rust
+group.set_aad(aad.clone());
+let message = group.create_message(&provider, &signer, payload)?;
+```
+
+**After:**
+```rust
+// Set AAD for each message
+let message = group.create_message(
+    &provider,
+    &signer,
+    payload,
+)
+.with_aad(aad)?;
+```
+
+### StagedWelcome API
+
+Joining groups is now staged to allow inspection of `Welcome` messages:
+
+```rust
+// Stage the welcome
+let staged_welcome = StagedWelcome::new_from_welcome(
+    &provider,
+    &mls_group_config,
+    welcome,
+    None,
+)?;
+
+// Inspect the welcome
+let members = staged_welcome.members();
+let group_context = staged_welcome.group_context();
+
+// Join the group
+let group = staged_welcome.into_group(&provider)?;
+```
+
+---
+
+## Migrating to 0.5.0
+
+### External Add Proposal
+
+The `Sender::NewMember` variant has been split into:
+- `Sender::NewMemberProposal` for external proposals
+- `Sender::NewMemberCommit` for external commits
+
+### Signature Key Changes
+
+Signature key indirection has been removed. Update credential creation:
+
+```rust
+// Old
+let credential = BasicCredential::new(identity.clone())?;
+let credential_with_key = CredentialWithKey {
+    credential: credential.into(),
+    signature_key: signature_key.clone(),
+};
+
+// New
+let credential = BasicCredential::new(identity.clone());
+let credential_with_key = CredentialWithKey {
+    credential: credential.into(),
+    signature_key: signature_public_key.into(),
+};
+```
+
+### API Naming Changes
+
+- `resumption_secret` → `resumption_psk` (0.5.0)
+- `resumption_psk` → `resumption_psk_secret` (later in 0.5.x)
+
+### MlsGroup.members() Returns Iterator
+
+```rust
+// Old: returned Vec
+let members: Vec<Member> = group.members();
+
+// New: returns iterator
+let members: Vec<Member> = group.members().collect();
+```
+
+### Self Update Takes LeafNode
+
+```rust
+// Generate a new LeafNode
+let leaf_node = LeafNode::generate(
+    &provider,
+    &signer,
+    /* ... */
+)?;
+
+// Use in self update proposal
+group.propose_self_update(
+    &provider,
+    &signer,
+    leaf_node,
+)?;
+```
+
+---
+
+## General Migration Tips
+
+<Note>
+  Always check the [CHANGELOG](/resources/changelog) for the complete list of changes between versions.
+</Note>
+
+### Update Dependencies
+
+```toml
+[dependencies]
+openmls = "0.8"
+openmls_traits = "0.3"
+openmls_rust_crypto = "0.3"
+openmls_memory_storage = "0.3"
+```
+
+### Test Your Migration
+
+1. **Run your test suite** against the new version
+2. **Check for deprecation warnings** in compiler output
+3. **Review breaking changes** in the changelog
+4. **Update error handling** for new error variants
+5. **Verify storage compatibility** if you have custom storage providers
+
+### Compatibility Testing
+
+```rust
+#[test]
+fn test_version_compatibility() {
+    // Test that groups created with older versions
+    // can still be loaded and used
+    let old_group_data = load_test_fixture("v0.7_group.bin");
+    let group = MlsGroup::load(&provider.storage(), &group_id)
+        .expect("Should load old group");
+    
+    // Perform operations
+    let message = group.create_message(&provider, &signer, b"test")
+        .expect("Should create message");
+}
+```
+
+### Getting Help
+
+If you encounter issues during migration:
+
+- Check the [FAQ](/resources/faq) for common questions
+- Review the [troubleshooting guide](/resources/troubleshooting)
+- Open an issue on [GitHub](https://github.com/openmls/openmls/issues)
+- Join the discussion on [GitHub Discussions](https://github.com/openmls/openmls/discussions)

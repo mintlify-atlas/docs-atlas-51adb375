@@ -1,0 +1,310 @@
+---
+title: RatchetTree
+description: The public state of the MLS ratchet tree
+---
+
+The `RatchetTree` represents the complete public state of an MLS group's tree structure. It contains all leaf and parent nodes in the tree and is used for synchronizing tree state across group members.
+
+## Overview
+
+The ratchet tree is a left-balanced binary tree where:
+- Leaf nodes (even indices) represent group members
+- Parent nodes (odd indices) contain shared secrets for subgroups
+- Blank nodes represent vacant positions in the tree
+
+## Structure
+
+```rust
+pub struct RatchetTree(Vec<Option<Node>>);
+
+pub enum Node {
+    LeafNode(LeafNode),
+    ParentNode(ParentNode),
+}
+```
+
+<ParamField path="nodes" type="Vec<Option<Node>>">
+  Vector of optional nodes in array representation of the binary tree. Even indices are leaf nodes, odd indices are parent nodes.
+</ParamField>
+
+## RatchetTreeExtension
+
+The ratchet tree can be included in GroupInfo messages via the RatchetTreeExtension:
+
+```rust
+pub struct RatchetTreeExtension {
+    ratchet_tree: RatchetTreeIn,
+}
+```
+
+### Creating RatchetTreeExtension
+
+```rust
+use openmls::extensions::*;
+
+let ratchet_tree = group.export_ratchet_tree();
+let extension = RatchetTreeExtension::new(ratchet_tree);
+```
+
+## Tree Validation
+
+When creating a RatchetTree from nodes, several validations are performed:
+
+### 1. No Trailing Blank Nodes
+
+Ratchet trees must not have trailing blank nodes:
+
+```rust
+// Valid
+let nodes = vec![Some(leaf), None, Some(leaf2)];
+
+// Invalid - trailing None
+let nodes = vec![Some(leaf), None, Some(leaf2), None];
+```
+
+### 2. Node Type Validation
+
+- Even indices must be LeafNodes (or blank)
+- Odd indices must be ParentNodes (or blank)
+
+```rust
+// Valid
+let nodes = vec![
+    Some(Node::LeafNode(leaf0)),      // index 0
+    Some(Node::ParentNode(parent1)),  // index 1
+    Some(Node::LeafNode(leaf2)),      // index 2
+];
+```
+
+### 3. Signature Verification
+
+All leaf nodes in the tree are signature-verified during import:
+
+```rust
+let ratchet_tree = RatchetTree::try_from_nodes(
+    ciphersuite,
+    crypto,
+    nodes,
+    &group_id,
+)?;
+```
+
+## Creating from Nodes
+
+```rust
+use openmls::prelude::*;
+
+let ratchet_tree = RatchetTree::try_from_nodes(
+    ciphersuite,
+    provider.crypto(),
+    nodes,
+    &group_id,
+)?;
+```
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  The ciphersuite to use for signature verification
+</ParamField>
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto" required>
+  Crypto provider for signature operations
+</ParamField>
+
+<ParamField path="nodes" type="Vec<Option<NodeIn>>" required>
+  Vector of unverified nodes
+</ParamField>
+
+<ParamField path="group_id" type="&GroupId" required>
+  Group ID for leaf node verification
+</ParamField>
+
+<ResponseField name="return" type="Result<RatchetTree, RatchetTreeError>">
+  Verified ratchet tree or error if validation fails
+</ResponseField>
+
+## RatchetTreeIn (Unverified)
+
+The deserialized, unverified form of a ratchet tree:
+
+```rust
+pub struct RatchetTreeIn(Vec<Option<NodeIn>>);
+```
+
+### Verification
+
+```rust
+let ratchet_tree_in: RatchetTreeIn = // ... deserialize ...
+
+let verified_tree = ratchet_tree_in.into_verified(
+    ciphersuite,
+    provider.crypto(),
+    &group_id,
+)?;
+```
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  Ciphersuite for verification
+</ParamField>
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto" required>
+  Crypto provider
+</ParamField>
+
+<ParamField path="group_id" type="&GroupId" required>
+  Group identifier
+</ParamField>
+
+<ResponseField name="return" type="Result<RatchetTree, RatchetTreeError>">
+  Verified ratchet tree
+</ResponseField>
+
+## Exporting Ratchet Tree
+
+Export the current tree state:
+
+```rust
+let ratchet_tree = group.export_ratchet_tree();
+```
+
+The exported tree:
+- Includes all nodes up to the rightmost full leaf
+- Trims trailing blank nodes
+- Contains only public information
+
+## Tree Indexing
+
+Nodes are indexed in array representation:
+
+```
+Index:   0   1   2   3   4   5   6
+Type:    L   P   L   P   L   P   L
+Level:   0   1   0   2   0   1   0
+
+L = Leaf node (even indices)
+P = Parent node (odd indices)
+```
+
+### Computing Tree Root
+
+```rust
+let tree_size = nodes.len() as u32;
+let root_index = (1 << log2(tree_size)) - 1;
+```
+
+## Tree Operations
+
+### Finding Free Leaf
+
+Find the next available position for adding a member:
+
+```rust
+let free_index = tree_sync.free_leaf_index();
+```
+
+### Iterating Leaves
+
+```rust
+for (index, leaf_node) in tree_sync.full_leaves() {
+    println!("Leaf {}: {:?}", index.u32(), leaf_node.credential());
+}
+```
+
+### Iterating Parents
+
+```rust
+for (index, parent_node) in tree_sync.full_parents() {
+    println!("Parent {}: {:?}", index.u32(), parent_node.public_key());
+}
+```
+
+### Finding Blank Nodes
+
+```rust
+// Blank leaf positions
+for leaf_index in tree_sync.blank_leaves() {
+    println!("Blank leaf at {}", leaf_index.u32());
+}
+
+// Blank parent positions
+for parent_index in tree_sync.blank_parents() {
+    println!("Blank parent at {}", parent_index.u32());
+}
+```
+
+## Wire Format
+
+The ratchet tree is serialized as:
+
+```c
+enum {
+    leaf(1),
+    parent(2),
+} NodeType;
+
+struct {
+    NodeType node_type;
+    select (Node.node_type) {
+        case leaf:   LeafNode leaf_node;
+        case parent: ParentNode parent_node;
+    };
+} Node;
+
+optional<Node> ratchet_tree<V>;
+```
+
+## Example: Processing Ratchet Tree
+
+```rust
+use openmls::prelude::*;
+
+// Receive ratchet tree in GroupInfo
+let group_info = // ... receive ...
+if let Some(ratchet_tree_ext) = group_info.extensions().ratchet_tree() {
+    let ratchet_tree_in = ratchet_tree_ext.ratchet_tree();
+    
+    // Verify the tree
+    let verified_tree = ratchet_tree_in.clone().into_verified(
+        ciphersuite,
+        provider.crypto(),
+        group_info.group_id(),
+    )?;
+    
+    // Create TreeSync from ratchet tree
+    let tree_sync = TreeSync::from_ratchet_tree(
+        provider.crypto(),
+        ciphersuite,
+        verified_tree,
+    )?;
+}
+```
+
+## Errors
+
+<ResponseField name="RatchetTreeError::MissingNodes" type="error">
+  The ratchet tree has no nodes
+</ResponseField>
+
+<ResponseField name="RatchetTreeError::TrailingBlankNodes" type="error">
+  The ratchet tree has trailing blank nodes (invalid per spec)
+</ResponseField>
+
+<ResponseField name="RatchetTreeError::InvalidNodeSignature" type="error">
+  A leaf node has an invalid signature
+</ResponseField>
+
+<ResponseField name="RatchetTreeError::WrongNodeType" type="error">
+  A node has the wrong type for its index (e.g., parent at even index)
+</ResponseField>
+
+## Best Practices
+
+1. **Always Verify**: Use `into_verified()` when processing received ratchet trees
+2. **Trim Blanks**: Exported trees automatically trim trailing blanks
+3. **Cache Results**: Tree operations can be expensive, cache when possible
+4. **Validate Context**: Ensure group_id matches when verifying
+
+## See Also
+
+- [LeafNode](/api/tree/leaf-node) - Leaf node structure
+- [ParentNode](/api/tree/parent-node) - Parent node structure
+- [TreeSync](https://www.rfc-editor.org/rfc/rfc9420.html#section-7) - RFC 9420 TreeSync specification

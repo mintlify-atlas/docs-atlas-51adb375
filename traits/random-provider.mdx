@@ -1,0 +1,341 @@
+---
+title: Random provider
+description: Implementing the OpenMlsRand trait for random number generation
+---
+
+The `OpenMlsRand` trait defines the functionality required by OpenMLS to source cryptographically secure randomness. It is used for key generation, random identifiers, and other operations requiring unpredictable values.
+
+## Trait definition
+
+The random provider trait is simple but critical:
+
+```rust
+pub trait OpenMlsRand {
+    type Error: std::error::Error + Debug;
+
+    /// Fill an array with random bytes.
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error>;
+
+    /// Fill a vector of length `len` with random bytes.
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error>;
+}
+```
+
+## Why a custom trait?
+
+While Rust has the commonly used [rand crate](https://crates.io/crates/rand), not all implementations use it. OpenMLS defines its own randomness trait because:
+
+- Different platforms may have different entropy sources
+- Some environments (like secure enclaves or embedded systems) need custom RNG implementations
+- Applications may need to integrate with specific cryptographic libraries or hardware RNGs
+- WebAssembly and other environments require platform-specific random sources
+
+## Required methods
+
+### Generate random array
+
+```rust
+fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error>;
+```
+
+Fills a fixed-size array with cryptographically secure random bytes. This is useful when the size is known at compile time.
+
+**Example usage:**
+```rust
+// Generate a 32-byte random value
+let random_bytes: [u8; 32] = provider.rand().random_array()?;
+```
+
+### Generate random vector
+
+```rust
+fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error>;
+```
+
+Fills a vector of the specified length with cryptographically secure random bytes. This is useful when the size is determined at runtime.
+
+**Example usage:**
+```rust
+// Generate 64 random bytes
+let random_bytes: Vec<u8> = provider.rand().random_vec(64)?;
+```
+
+## Example implementation
+
+Here's how the Rust Crypto provider implements `OpenMlsRand`:
+
+```rust
+use openmls_traits::random::OpenMlsRand;
+use rand::{RngCore, SeedableRng};
+use std::sync::RwLock;
+
+#[derive(Debug)]
+pub struct RustCrypto {
+    rng: RwLock<rand_chacha::ChaCha20Rng>,
+}
+
+impl Default for RustCrypto {
+    fn default() -> Self {
+        Self {
+            rng: RwLock::new(rand_chacha::ChaCha20Rng::from_entropy()),
+        }
+    }
+}
+
+impl OpenMlsRand for RustCrypto {
+    type Error = RandError;
+
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error> {
+        let mut rng = self.rng.write()
+            .map_err(|_| Self::Error::LockPoisoned)?;
+        let mut out = [0u8; N];
+        rng.try_fill_bytes(&mut out)
+            .map_err(|_| Self::Error::NotEnoughRandomness)?;
+        Ok(out)
+    }
+
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
+        let mut rng = self.rng.write()
+            .map_err(|_| Self::Error::LockPoisoned)?;
+        let mut out = vec![0u8; len];
+        rng.try_fill_bytes(&mut out)
+            .map_err(|_| Self::Error::NotEnoughRandomness)?;
+        Ok(out)
+    }
+}
+
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RandError {
+    #[error("RNG lock is poisoned.")]
+    LockPoisoned,
+    #[error("Unable to collect enough randomness.")]
+    NotEnoughRandomness,
+}
+```
+
+## Key implementation details
+
+### Thread safety
+
+The implementation uses `RwLock` to ensure thread-safe access to the RNG state. This is important because:
+- OpenMLS may be used in multi-threaded environments
+- Multiple operations might need random values concurrently
+- RNG state must be properly protected from race conditions
+
+### Entropy source
+
+The example uses `ChaCha20Rng::from_entropy()` which:
+- Seeds the RNG from the operating system's entropy source
+- Provides a cryptographically secure pseudo-random number generator
+- Is suitable for cryptographic operations
+
+### Error handling
+
+The implementation defines specific error types:
+- `LockPoisoned`: The RNG lock is in a poisoned state (typically from a panic in another thread)
+- `NotEnoughRandomness`: The RNG couldn't generate the requested randomness
+
+## Platform-specific implementations
+
+### Using OS random sources directly
+
+For some platforms, you might want to use OS-specific APIs:
+
+```rust
+use getrandom::getrandom;
+
+pub struct OsRandomProvider;
+
+impl OpenMlsRand for OsRandomProvider {
+    type Error = getrandom::Error;
+
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error> {
+        let mut out = [0u8; N];
+        getrandom(&mut out)?;
+        Ok(out)
+    }
+
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
+        let mut out = vec![0u8; len];
+        getrandom(&mut out)?;
+        Ok(out)
+    }
+}
+```
+
+### WebAssembly implementation
+
+For WebAssembly environments:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+pub struct WebRandomProvider;
+
+#[cfg(target_arch = "wasm32")]
+impl OpenMlsRand for WebRandomProvider {
+    type Error = JsError;
+
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error> {
+        let mut out = [0u8; N];
+        // Use web_sys::window().crypto().get_random_values()
+        get_random_values(&mut out)?;
+        Ok(out)
+    }
+
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
+        let mut out = vec![0u8; len];
+        get_random_values(&mut out)?;
+        Ok(out)
+    }
+}
+```
+
+### Hardware RNG integration
+
+For systems with hardware RNG support:
+
+```rust
+pub struct HardwareRandomProvider {
+    // Handle to hardware RNG device
+    device: HardwareRngDevice,
+}
+
+impl OpenMlsRand for HardwareRandomProvider {
+    type Error = HardwareRngError;
+
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error> {
+        let mut out = [0u8; N];
+        self.device.fill_bytes(&mut out)?;
+        Ok(out)
+    }
+
+    fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
+        let mut out = vec![0u8; len];
+        self.device.fill_bytes(&mut out)?;
+        Ok(out)
+    }
+}
+```
+
+## Security considerations
+
+<Warning>
+The random provider is critical for security. Weak or predictable random values can compromise the entire MLS protocol.
+</Warning>
+
+### Requirements for cryptographic randomness
+
+1. **Unpredictability**: Output must be computationally indistinguishable from true random
+2. **Proper seeding**: RNG must be seeded from a secure entropy source
+3. **No bias**: All output bits should have equal probability
+4. **Forward secrecy**: Past outputs should not reveal future outputs
+5. **Backtracking resistance**: Compromise of current state should not reveal past outputs
+
+### Testing randomness
+
+While you cannot fully test randomness in automated tests, you should:
+
+1. Verify the implementation uses a CSPRNG (Cryptographically Secure Pseudo-Random Number Generator)
+2. Ensure proper seeding from OS entropy sources
+3. Test error handling (e.g., what happens if entropy is exhausted)
+4. Verify thread safety under concurrent access
+
+```rust
+#[test]
+fn test_random_provider() {
+    let provider = RustCrypto::default();
+    
+    // Test array generation
+    let arr1: [u8; 32] = provider.random_array().unwrap();
+    let arr2: [u8; 32] = provider.random_array().unwrap();
+    assert_ne!(arr1, arr2, "Random arrays should be different");
+    
+    // Test vector generation
+    let vec1 = provider.random_vec(64).unwrap();
+    let vec2 = provider.random_vec(64).unwrap();
+    assert_ne!(vec1, vec2, "Random vectors should be different");
+    assert_eq!(vec1.len(), 64, "Vector should have requested length");
+}
+```
+
+## Combining with crypto provider
+
+Often the same type implements both `OpenMlsCrypto` and `OpenMlsRand`:
+
+```rust
+pub struct RustCrypto {
+    rng: RwLock<rand_chacha::ChaCha20Rng>,
+}
+
+impl OpenMlsCrypto for RustCrypto {
+    // ... crypto implementations
+}
+
+impl OpenMlsRand for RustCrypto {
+    // ... random implementations
+}
+
+// Use in provider
+impl OpenMlsProvider for OpenMlsRustCrypto {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = RustCrypto;  // Same type!
+    type StorageProvider = MemoryStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto  // Same instance
+    }
+    
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+## Using the random provider
+
+Once implemented, the random provider is used throughout OpenMLS:
+
+```rust
+use openmls::prelude::*;
+
+let provider = OpenMlsRustCrypto::default();
+
+// OpenMLS uses the random provider internally for:
+// - Generating key material
+// - Creating random identifiers
+// - Nonce generation
+// - Other cryptographic operations requiring randomness
+
+let credential = BasicCredential::new(b"user@example.com".to_vec());
+let credential_with_key = CredentialWithKey {
+    credential: credential.into(),
+    signature_key: provider.crypto().signature_key_gen(
+        SignatureScheme::ED25519
+    )?.1.into(),
+};
+
+// Key package generation uses random provider internally
+let key_package = KeyPackage::builder()
+    .build(ciphersuite, &provider, &signer, credential_with_key)?;
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Crypto provider" icon="lock" href="/traits/crypto-provider">
+    Learn about the crypto provider trait
+  </Card>
+  <Card title="Storage provider" icon="database" href="/traits/storage-provider">
+    Learn about the storage provider trait
+  </Card>
+  <Card title="Custom implementation" icon="code" href="/traits/custom-implementation">
+    Complete guide to implementing custom providers
+  </Card>
+  <Card title="Overview" icon="book" href="/traits/overview">
+    Back to provider traits overview
+  </Card>
+</CardGroup>

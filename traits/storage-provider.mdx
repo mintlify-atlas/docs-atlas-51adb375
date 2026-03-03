@@ -1,0 +1,430 @@
+---
+title: Storage provider
+description: Implementing the StorageProvider trait for persistent state management
+---
+
+The `StorageProvider` trait defines an API for a storage backend used for all OpenMLS persistence. It manages group state, cryptographic keys, proposals, and other data required by the MLS protocol.
+
+## Trait definition
+
+The storage provider is a large trait with methods organized into several categories:
+
+```rust
+pub trait StorageProvider<const VERSION: u16> {
+    type Error: core::fmt::Debug + std::error::Error;
+
+    fn version() -> u16 {
+        VERSION
+    }
+
+    // Group state methods
+    fn write_mls_join_config<...>(&self, ...) -> Result<(), Self::Error>;
+    fn mls_group_join_config<...>(&self, ...) -> Result<Option<...>, Self::Error>;
+    
+    // Proposal queue methods
+    fn queue_proposal<...>(&self, ...) -> Result<(), Self::Error>;
+    fn queued_proposals<...>(&self, ...) -> Result<Vec<...>, Self::Error>;
+    
+    // Cryptographic object methods
+    fn write_signature_key_pair<...>(&self, ...) -> Result<(), Self::Error>;
+    fn signature_key_pair<...>(&self, ...) -> Result<Option<...>, Self::Error>;
+    
+    // ... many more methods
+}
+```
+
+## Storage categories
+
+The storage provider handles several categories of data:
+
+### Group state
+
+Group-related state includes:
+- Group configuration (`MlsGroupJoinConfig`)
+- TreeSync tree
+- Group context
+- Interim transcript hash
+- Confirmation tag
+- Group state
+- Own leaf nodes
+- Own leaf index
+- Message secrets
+- Resumption PSK store
+- Group epoch secrets
+
+### Proposal queue
+
+Manages pending proposals:
+- Queue proposal
+- Retrieve queued proposals
+- Remove individual proposals
+- Clear proposal queue
+
+### Cryptographic objects
+
+Stores keys and related objects:
+- Signature key pairs
+- Encryption key pairs
+- Epoch encryption key pairs
+- Key packages
+- PSKs (Pre-Shared Keys)
+
+## Key and entity traits
+
+The storage provider uses type-safe traits to distinguish between keys (identifiers) and entities (stored values):
+
+<CodeGroup>
+```rust Key trait
+/// Key is implemented by types that serve as identifiers.
+/// Keys are used to address something that is stored.
+pub trait Key<const VERSION: u16>: Serialize {}
+```
+
+```rust Entity trait
+/// Entity is implemented by values being stored.
+pub trait Entity<const VERSION: u16>: Serialize + DeserializeOwned {}
+```
+</CodeGroup>
+
+Each data type has its own specific trait:
+
+```rust
+pub mod traits {
+    // Key traits
+    pub trait GroupId<const VERSION: u16>: Key<VERSION> {}
+    pub trait SignaturePublicKey<const VERSION: u16>: Key<VERSION> {}
+    pub trait HashReference<const VERSION: u16>: Key<VERSION> {}
+    pub trait EncryptionKey<const VERSION: u16>: Key<VERSION> {}
+    
+    // Entity traits
+    pub trait KeyPackage<const VERSION: u16>: Entity<VERSION> {}
+    pub trait TreeSync<const VERSION: u16>: Entity<VERSION> {}
+    pub trait GroupContext<const VERSION: u16>: Entity<VERSION> {}
+    
+    // Traits for types that are both keys and entities
+    pub trait ProposalRef<const VERSION: u16>: Entity<VERSION> + Key<VERSION> {}
+}
+```
+
+## Return types and semantics
+
+### Getters for individual values
+
+Return `Result<Option<T>, E>` where:
+- `Err(_)`: IO or internal error occurred
+- `Ok(None)`: No error, but value doesn't exist
+- `Ok(Some(value))`: Value found successfully
+
+### Getters for lists
+
+Return `Result<Vec<T>, E>` where:
+- `Err(_)`: IO or internal error occurred
+- `Ok(vec![])`: No error, but list is empty or doesn't exist
+- `Ok(vec![...])`: List of values found
+
+<Info>
+Any value using the group ID as a key is required by the group. Returning `None` or an error for these methods will cause a failure when loading a group.
+</Info>
+
+## Example: Memory storage implementation
+
+Here's how the memory storage provider implements key package storage:
+
+```rust
+use openmls_traits::storage::*;
+use std::collections::HashMap;
+use std::sync::RwLock;
+
+#[derive(Debug, Default)]
+pub struct MemoryStorage {
+    pub values: RwLock<HashMap<Vec<u8>, Vec<u8>>>,
+}
+
+impl StorageProvider<CURRENT_VERSION> for MemoryStorage {
+    type Error = MemoryStorageError;
+
+    fn write_key_package<
+        HashReference: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &HashReference,
+        key_package: &KeyPackage,
+    ) -> Result<(), Self::Error> {
+        let key = serde_json::to_vec(&hash_ref)?;
+        let value = serde_json::to_vec(&key_package)?;
+        
+        let mut values = self.values.write().unwrap();
+        let storage_key = build_key(KEY_PACKAGE_LABEL, key);
+        values.insert(storage_key, value);
+        
+        Ok(())
+    }
+
+    fn key_package<
+        KeyPackageRef: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<Option<KeyPackage>, Self::Error> {
+        let key = serde_json::to_vec(&hash_ref)?;
+        let values = self.values.read().unwrap();
+        let storage_key = build_key(KEY_PACKAGE_LABEL, key);
+        
+        if let Some(value) = values.get(&storage_key) {
+            let key_package = serde_json::from_slice(value)?;
+            Ok(Some(key_package))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn delete_key_package<KeyPackageRef: traits::HashReference<CURRENT_VERSION>>(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<(), Self::Error> {
+        let key = serde_json::to_vec(&hash_ref)?;
+        let mut values = self.values.write().unwrap();
+        let storage_key = build_key(KEY_PACKAGE_LABEL, key);
+        values.remove(&storage_key);
+        Ok(())
+    }
+}
+```
+
+## Example: Managing key package lifetime
+
+Key packages are only deleted by OpenMLS when they are used and not last resort key packages. Applications may need additional logic:
+
+```rust
+fn write_key_package<
+    HashReference: traits::HashReference<VERSION>,
+    KeyPackage: traits::KeyPackage<VERSION>,
+>(
+    &self,
+    hash_ref: &HashReference,
+    key_package: &KeyPackage,
+) -> Result<(), Self::Error> {
+    // Get the validity period from your application logic
+    let validity = self.get_validity(hash_ref);
+
+    // Store the reference and its validity period in a separate table
+    self.store_hash_ref_with_validity(hash_ref, validity)?;
+
+    // Store the actual key package
+    self.store_key_package(hash_ref, key_package)?;
+    
+    Ok(())
+}
+```
+
+This allows the application to iterate over hash references and delete outdated key packages.
+
+## Proposal queue management
+
+The proposal queue is an important part of the storage provider. Here's how to implement it:
+
+```rust
+fn queue_proposal<
+    GroupId: traits::GroupId<VERSION>,
+    ProposalRef: traits::ProposalRef<VERSION>,
+    QueuedProposal: traits::QueuedProposal<VERSION>,
+>(
+    &self,
+    group_id: &GroupId,
+    proposal_ref: &ProposalRef,
+    proposal: &QueuedProposal,
+) -> Result<(), Self::Error> {
+    // Store the proposal indexed by (group_id, proposal_ref)
+    let key = (group_id, proposal_ref);
+    self.write_proposal(&key, proposal)?;
+    
+    // Add the proposal_ref to the group's proposal queue list
+    self.append_to_queue(group_id, proposal_ref)?;
+    
+    Ok(())
+}
+
+fn queued_proposals<
+    GroupId: traits::GroupId<VERSION>,
+    ProposalRef: traits::ProposalRef<VERSION>,
+    QueuedProposal: traits::QueuedProposal<VERSION>,
+>(
+    &self,
+    group_id: &GroupId,
+) -> Result<Vec<(ProposalRef, QueuedProposal)>, Self::Error> {
+    // Get all proposal refs for this group
+    let refs: Vec<ProposalRef> = self.read_queue_refs(group_id)?;
+    
+    // Fetch each proposal
+    refs.into_iter()
+        .map(|proposal_ref| {
+            let key = (group_id, &proposal_ref);
+            let proposal = self.read_proposal(&key)?.unwrap();
+            Ok((proposal_ref, proposal))
+        })
+        .collect()
+}
+```
+
+## SQLite implementation example
+
+For persistent storage, you might use SQLite:
+
+```rust
+use rusqlite::{Connection, params};
+
+pub struct SqliteStorageProvider<C: Codec> {
+    connection: Connection,
+    _codec: PhantomData<C>,
+}
+
+impl<C: Codec> SqliteStorageProvider<C> {
+    pub fn new(connection: Connection) -> Self {
+        Self {
+            connection,
+            _codec: PhantomData,
+        }
+    }
+    
+    pub fn run_migrations(&self) -> Result<(), rusqlite::Error> {
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS key_packages (
+                hash_ref BLOB PRIMARY KEY,
+                key_package BLOB NOT NULL
+            )",
+            [],
+        )?;
+        // ... more migrations
+        Ok(())
+    }
+}
+
+impl<C: Codec> StorageProvider<CURRENT_VERSION> for SqliteStorageProvider<C> {
+    type Error = SqliteStorageError;
+
+    fn write_key_package<...>(
+        &self,
+        hash_ref: &HashReference,
+        key_package: &KeyPackage,
+    ) -> Result<(), Self::Error> {
+        let hash_ref_bytes = C::encode(hash_ref)?;
+        let key_package_bytes = C::encode(key_package)?;
+        
+        self.connection.execute(
+            "INSERT OR REPLACE INTO key_packages (hash_ref, key_package) VALUES (?1, ?2)",
+            params![hash_ref_bytes, key_package_bytes],
+        )?;
+        
+        Ok(())
+    }
+    
+    // ... other implementations
+}
+```
+
+## Storage versioning
+
+The storage provider is versioned to support schema evolution:
+
+```rust
+pub const CURRENT_VERSION: u16 = 1;
+
+pub trait StorageProvider<const VERSION: u16> {
+    fn version() -> u16 {
+        VERSION
+    }
+    // ...
+}
+```
+
+When OpenMLS updates stored types, you'll need to:
+1. Implement migration logic
+2. Update your storage schema
+3. Increment the version number
+
+## Error handling
+
+Define a custom error type for your storage provider:
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum MyStorageError {
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] serde_json::Error),
+    
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] rusqlite::Error),
+    
+    #[error("Item not found")]
+    NotFound,
+}
+```
+
+## Performance considerations
+
+<Accordion title="Use efficient serialization">
+Choose an efficient serialization format. The SQLite storage provider supports custom codecs via the `Codec` trait.
+</Accordion>
+
+<Accordion title="Index properly">
+For SQL-based storage, ensure appropriate indexes on frequently queried columns (especially group_id).
+</Accordion>
+
+<Accordion title="Batch operations">
+Consider implementing batch write operations or transactions for better performance when multiple values are updated together.
+</Accordion>
+
+<Accordion title="Connection pooling">
+For multi-threaded applications, consider using connection pooling for your database backend.
+</Accordion>
+
+## Using the storage provider
+
+Storage providers are used as part of the full provider implementation:
+
+```rust
+use openmls_rust_crypto::RustCrypto;
+use my_storage::SqliteStorageProvider;
+
+struct MyProvider {
+    crypto: RustCrypto,
+    storage: SqliteStorageProvider,
+}
+
+impl OpenMlsProvider for MyProvider {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = RustCrypto;
+    type StorageProvider = SqliteStorageProvider;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Crypto provider" icon="lock" href="/traits/crypto-provider">
+    Learn about the crypto provider trait
+  </Card>
+  <Card title="Random provider" icon="dice" href="/traits/random-provider">
+    Learn about the random provider trait
+  </Card>
+  <Card title="Custom implementation" icon="code" href="/traits/custom-implementation">
+    Complete guide to implementing custom providers
+  </Card>
+  <Card title="Overview" icon="book" href="/traits/overview">
+    Back to provider traits overview
+  </Card>
+</CardGroup>

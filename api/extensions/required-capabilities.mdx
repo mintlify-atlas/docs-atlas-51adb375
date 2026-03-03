@@ -1,0 +1,186 @@
+---
+title: RequiredCapabilitiesExtension
+description: Group requirements for extensions, proposals, and credentials
+---
+
+The `RequiredCapabilitiesExtension` defines the configuration requirements for all members of an MLS group. This extension appears in the GroupContext to ensure all members support the required capabilities.
+
+## Overview
+
+This extension lists the extensions, proposal types, and credential types that must be supported by all members of the group. It is enforced during the application of Add commits for new members.
+
+## Structure
+
+```c
+struct {
+    ExtensionType extension_types<V>;
+    ProposalType proposal_types<V>;
+    CredentialType credential_types<V>;
+} RequiredCapabilities;
+```
+
+## Fields
+
+<ParamField path="extension_types" type="Vec<ExtensionType>">
+  List of extension types that all group members must support
+</ParamField>
+
+<ParamField path="proposal_types" type="Vec<ProposalType>">
+  List of proposal types that all group members must support
+</ParamField>
+
+<ParamField path="credential_types" type="Vec<CredentialType>">
+  List of credential types that all group members must support
+</ParamField>
+
+## Creating Required Capabilities
+
+```rust
+use openmls::prelude::*;
+
+let required_caps = RequiredCapabilitiesExtension::new(
+    &[ExtensionType::ApplicationId],
+    &[ProposalType::Add, ProposalType::Remove],
+    &[CredentialType::Basic]
+);
+```
+
+## Usage in GroupContext
+
+```rust
+use openmls::extensions::*;
+
+// Create extension
+let req_caps = Extension::RequiredCapabilities(
+    RequiredCapabilitiesExtension::new(
+        &[ExtensionType::ApplicationId],
+        &[],
+        &[CredentialType::Basic]
+    )
+);
+
+// Add to group context extensions
+let mut extensions = Extensions::<GroupContext>::empty();
+extensions.add(req_caps)?;
+```
+
+## Methods
+
+### new()
+
+Creates a new RequiredCapabilitiesExtension.
+
+```rust
+pub fn new(
+    extension_types: &[ExtensionType],
+    proposal_types: &[ProposalType],
+    credential_types: &[CredentialType],
+) -> Self
+```
+
+<ParamField path="extension_types" type="&[ExtensionType]" required>
+  Required extension types
+</ParamField>
+
+<ParamField path="proposal_types" type="&[ProposalType]" required>
+  Required proposal types
+</ParamField>
+
+<ParamField path="credential_types" type="&[CredentialType]" required>
+  Required credential types
+</ParamField>
+
+<ResponseField name="return" type="RequiredCapabilitiesExtension">
+  New RequiredCapabilitiesExtension instance
+</ResponseField>
+
+### extension_types()
+
+Returns the list of required extension types.
+
+```rust
+pub fn extension_types(&self) -> &[ExtensionType]
+```
+
+<ResponseField name="return" type="&[ExtensionType]">
+  Slice of required extension types
+</ResponseField>
+
+### proposal_types()
+
+Returns the list of required proposal types.
+
+```rust
+pub fn proposal_types(&self) -> &[ProposalType]
+```
+
+<ResponseField name="return" type="&[ProposalType]">
+  Slice of required proposal types
+</ResponseField>
+
+### credential_types()
+
+Returns the list of required credential types.
+
+```rust
+pub fn credential_types(&self) -> &[CredentialType]
+```
+
+<ResponseField name="return" type="&[CredentialType]">
+  Slice of required credential types
+</ResponseField>
+
+## Validation
+
+When a GroupContextExtensions proposal contains a RequiredCapabilitiesExtension, it is validated to ensure:
+
+1. All current group members support the required capabilities
+2. The proposal is rejected if any member lacks required support
+
+When adding new members:
+
+1. The new member's capabilities are checked against required capabilities
+2. The Add commit is rejected if the member doesn't support all requirements
+
+## Example: Setting Group Requirements
+
+```rust
+use openmls::prelude::*;
+
+// Define what all members must support
+let required_extensions = vec![
+    ExtensionType::ApplicationId,
+];
+
+let required_proposals = vec![
+    ProposalType::Add,
+    ProposalType::Remove,
+    ProposalType::Update,
+];
+
+let required_credentials = vec![
+    CredentialType::Basic,
+];
+
+// Create the extension
+let req_caps = RequiredCapabilitiesExtension::new(
+    &required_extensions,
+    &required_proposals,
+    &required_credentials,
+);
+
+// Use in group creation or update
+let extension = Extension::RequiredCapabilities(req_caps);
+```
+
+## Default Support
+
+Members automatically support these "default" capabilities without explicit declaration:
+- Default extensions: ApplicationId, RatchetTree, RequiredCapabilities, ExternalPub, ExternalSenders
+- Default proposals depend on the MLS protocol version
+
+## See Also
+
+- [Capabilities](/api/tree/leaf-node#capabilities) - Leaf node capability structure
+- [Extensions Overview](/api/extensions/overview)
+- [GroupContext Extensions](https://www.rfc-editor.org/rfc/rfc9420.html#section-12.1.8)

@@ -1,43 +1,41 @@
 ---
-title: "Quickstart"
-description: "Create your first two-party MLS group and exchange encrypted messages"
+title: "Two-Party Encrypted Chat"
+description: "Build a basic two-party encrypted chat application with OpenMLS"
 ---
 
-This guide walks you through creating a basic two-party MLS group using OpenMLS. You'll learn the fundamental concepts by building a working example.
+This example demonstrates how to set up a secure two-party chat using OpenMLS. Two users will create credentials, exchange key packages, and establish an encrypted group conversation.
 
-## What you'll build
+## Overview
 
-In this quickstart, you'll create:
+In this example, we'll create:
+- Two participants (Sasha and Maxim)
+- Credentials and key packages for each participant
+- A group with both members
+- Encrypted message exchange
 
-1. Two participants (Sasha and Maxim) with credentials and key packages
-2. An MLS group created by Sasha
-3. An invitation for Maxim to join the group
-4. Maxim's acceptance and joining of the group
+<Steps>
 
-## Prerequisites
+### Set up dependencies
 
-Make sure you have OpenMLS installed. See [Installation](/installation) for details.
+Add OpenMLS and the Rust crypto provider to your `Cargo.toml`:
 
-For this quickstart, add these dependencies to your `Cargo.toml`:
-
-```toml Cargo.toml
+```toml
 [dependencies]
-openmls = "0.8.1"
+openmls = "1.0"
 openmls_rust_crypto = "0.4"
-openmls_basic_credential = "0.4"
-tls_codec = "0.4"
+openmls_basic_credential = "0.3"
 ```
 
-## Step 1: Set up the environment
+### Define the ciphersuite and providers
 
-First, import the necessary modules and set up the ciphersuite and crypto providers:
+First, choose a ciphersuite and create providers for both parties:
 
 ```rust
 use openmls::prelude::{*, tls_codec::*};
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_basic_credential::SignatureKeyPair;
 
-// Define the ciphersuite (using the mandatory-to-implement suite)
+// Define ciphersuite
 let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 // Create providers for both parties
@@ -45,17 +43,12 @@ let sasha_provider = &OpenMlsRustCrypto::default();
 let maxim_provider = &OpenMlsRustCrypto::default();
 ```
 
-<Note>
-In this example, we use separate provider instances for each participant to simulate two independent clients. In a real application, each client would run in its own process or on different devices.
-</Note>
-
-## Step 2: Create helper functions
+### Create helper functions
 
 Define helper functions to generate credentials and key packages:
 
-### Credential generation helper
-
 ```rust
+// Helper to create and store credentials
 fn generate_credential_with_key(
     identity: Vec<u8>,
     credential_type: CredentialType,
@@ -79,11 +72,8 @@ fn generate_credential_with_key(
         signature_keys,
     )
 }
-```
 
-### Key package generation helper
-
-```rust
+// Helper to create key package bundles
 fn generate_key_package(
     ciphersuite: Ciphersuite,
     provider: &impl OpenMlsProvider,
@@ -101,22 +91,11 @@ fn generate_key_package(
 }
 ```
 
-<Accordion title="What are credentials and key packages?">
-**Credentials** identify participants in an MLS group. OpenMLS uses `BasicCredential`, which contains an identity as a byte vector.
+### Generate credentials for both parties
 
-**Key packages** contain the public key material needed to add a client to a group asynchronously. They include:
-- A public HPKE encryption key
-- The client's credential and signature
-- Information about supported features and extensions
-- A lifetime during which the key package is valid
-</Accordion>
-
-## Step 3: Create participants
-
-Generate credentials and key packages for both participants:
+Create credentials for Sasha and Maxim:
 
 ```rust
-// Create credentials for both participants
 let (sasha_credential_with_key, sasha_signer) = generate_credential_with_key(
     "Sasha".into(),
     CredentialType::Basic,
@@ -130,8 +109,13 @@ let (maxim_credential_with_key, maxim_signer) = generate_credential_with_key(
     ciphersuite.signature_algorithm(),
     maxim_provider,
 );
+```
 
-// Generate Maxim's key package
+### Generate key packages
+
+Generate a key package for Maxim to facilitate the asynchronous handshake:
+
+```rust
 let maxim_key_package = generate_key_package(
     ciphersuite,
     maxim_provider,
@@ -140,15 +124,12 @@ let maxim_key_package = generate_key_package(
 );
 ```
 
-<Note>
-In a real application, Maxim would upload their key package to a server, and Sasha would retrieve it from there. This enables asynchronous group creation.
-</Note>
+### Create a group and add member
 
-## Step 4: Create the group
-
-Sasha creates a new MLS group:
+Sasha creates a new group and invites Maxim:
 
 ```rust
+// Sasha creates a new group
 let mut sasha_group = MlsGroup::new(
     sasha_provider,
     &sasha_signer,
@@ -156,16 +137,8 @@ let mut sasha_group = MlsGroup::new(
     sasha_credential_with_key,
 )
 .expect("An unexpected error occurred.");
-```
 
-At this point, Sasha has created a group containing only themselves.
-
-## Step 5: Add Maxim to the group
-
-Sasha invites Maxim by adding their key package to the group:
-
-```rust
-// Add Maxim to the group
+// Sasha invites Maxim to the group
 let (mls_message_out, welcome_out, group_info) = sasha_group
     .add_members(
         sasha_provider,
@@ -180,83 +153,90 @@ sasha_group
     .expect("error merging pending commit");
 ```
 
-<Accordion title="What happens during add_members?">
-When adding members:
+### Process the Welcome message
 
-1. OpenMLS creates a **Commit** message that proposes adding Maxim to the group
-2. It generates a **Welcome** message containing the group secrets for Maxim
-3. It produces **GroupInfo** that describes the group state
-
-The commit is initially "pending" and must be merged to update Sasha's local group state.
-</Accordion>
-
-## Step 6: Serialize the Welcome message
-
-Serialize the Welcome message to send it to Maxim:
+Maxim receives and processes the Welcome message to join the group:
 
 ```rust
-// Serialize the Welcome message
+// Sasha serializes the Welcome message
 let serialized_welcome = welcome_out
     .tls_serialize_detached()
     .expect("Error serializing welcome");
-```
 
-<Note>
-In a real application, this serialized message would be sent to Maxim through your application's transport layer (e.g., via a server).
-</Note>
-
-## Step 7: Maxim receives and processes the Welcome
-
-Maxim deserializes the Welcome message and joins the group:
-
-```rust
 // Maxim deserializes the message
 let mls_message_in = MlsMessageIn::tls_deserialize(&mut serialized_welcome.as_slice())
     .expect("An unexpected error occurred.");
 
-// Extract the Welcome message
+// Extract the Welcome
 let welcome = match mls_message_in.extract() {
     MlsMessageBodyIn::Welcome(welcome) => welcome,
     _ => unreachable!("Unexpected message type."),
 };
 
-// Create a staged join to inspect the Welcome
+// Maxim creates a staged join to inspect the welcome
 let maxim_staged_join = StagedWelcome::new_from_welcome(
     maxim_provider,
     &MlsGroupJoinConfig::default(),
     welcome,
-    // The public tree is transferred out of band
+    // The public tree is needed and transferred out of band
     Some(sasha_group.export_ratchet_tree().into()),
 )
 .expect("Error creating a staged join from Welcome");
 
-// Finally, Maxim creates the group
+// Maxim creates the group
 let mut maxim_group = maxim_staged_join
     .into_group(maxim_provider)
     .expect("Error creating the group from the staged join");
 ```
 
-<Accordion title="Why stage the Welcome?">
-Staging allows you to inspect the Welcome message before committing to join the group. This enables validation of:
+### Send encrypted messages
 
-- Group membership
-- Group parameters and policies
-- Extensions and capabilities
+Now both parties can exchange encrypted messages:
 
-Once validated, you can commit by calling `into_group()`.
-</Accordion>
+```rust
+// Maxim sends a message
+let message_maxim = maxim_group
+    .create_message(maxim_provider, &maxim_signer, b"Hello Sasha!")
+    .expect("Error creating application message");
 
-## Complete example
+// Serialize the message for transmission
+let serialized_message = message_maxim
+    .tls_serialize_detached()
+    .expect("Error serializing message");
 
-Here's the complete working example you can run:
+// Sasha receives and processes the message
+let protocol_message = MlsMessageIn::tls_deserialize(&mut serialized_message.as_slice())
+    .expect("Error deserializing message")
+    .try_into_protocol_message()
+    .expect("Expected protocol message");
 
-```rust src/main.rs
+let processed_message = sasha_group
+    .process_message(sasha_provider, protocol_message)
+    .expect("Error processing message");
+
+if let ProcessedMessageContent::ApplicationMessage(app_message) = 
+    processed_message.into_content() 
+{
+    let message_text = String::from_utf8(
+        app_message.into_bytes()
+    ).unwrap();
+    println!("Sasha received: {}", message_text); // "Hello Sasha!"
+}
+```
+
+</Steps>
+
+## Complete Example
+
+<CodeGroup>
+
+```rust main.rs
 use openmls::prelude::{*, tls_codec::*};
 use openmls_rust_crypto::OpenMlsRustCrypto;
 use openmls_basic_credential::SignatureKeyPair;
 
 fn main() {
-    // Define ciphersuite and providers
+    // Define ciphersuite
     let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
     let sasha_provider = &OpenMlsRustCrypto::default();
     let maxim_provider = &OpenMlsRustCrypto::default();
@@ -276,15 +256,15 @@ fn main() {
         maxim_provider,
     );
 
-    // Generate Maxim's key package
+    // Generate key package for Maxim
     let maxim_key_package = generate_key_package(
         ciphersuite,
         maxim_provider,
         &maxim_signer,
-        maxim_credential_with_key
+        maxim_credential_with_key,
     );
 
-    // Sasha creates a group
+    // Sasha creates a group and adds Maxim
     let mut sasha_group = MlsGroup::new(
         sasha_provider,
         &sasha_signer,
@@ -293,26 +273,23 @@ fn main() {
     )
     .expect("An unexpected error occurred.");
 
-    // Sasha invites Maxim
-    let (mls_message_out, welcome_out, group_info) = sasha_group
+    let (mls_message_out, welcome_out, _group_info) = sasha_group
         .add_members(
             sasha_provider,
             &sasha_signer,
-            core::slice::from_ref(maxim_key_package.key_package())
+            core::slice::from_ref(maxim_key_package.key_package()),
         )
         .expect("Could not add members.");
 
-    // Sasha merges the pending commit
     sasha_group
         .merge_pending_commit(sasha_provider)
         .expect("error merging pending commit");
 
-    // Serialize the Welcome
+    // Maxim joins the group
     let serialized_welcome = welcome_out
         .tls_serialize_detached()
         .expect("Error serializing welcome");
 
-    // Maxim receives and processes the Welcome
     let mls_message_in = MlsMessageIn::tls_deserialize(&mut serialized_welcome.as_slice())
         .expect("An unexpected error occurred.");
 
@@ -333,12 +310,14 @@ fn main() {
         .into_group(maxim_provider)
         .expect("Error creating the group from the staged join");
 
-    println!("✅ Successfully created a two-party MLS group!");
-    println!("   Sasha's group ID: {:?}", sasha_group.group_id());
-    println!("   Maxim's group ID: {:?}", maxim_group.group_id());
+    // Exchange messages
+    let message = maxim_group
+        .create_message(maxim_provider, &maxim_signer, b"Hello Sasha!")
+        .expect("Error creating application message");
+
+    println!("Two-party chat established successfully!");
 }
 
-// Helper functions
 fn generate_credential_with_key(
     identity: Vec<u8>,
     credential_type: CredentialType,
@@ -348,11 +327,9 @@ fn generate_credential_with_key(
     let credential = BasicCredential::new(identity);
     let signature_keys = SignatureKeyPair::new(signature_algorithm)
         .expect("Error generating a signature key pair.");
-
     signature_keys
         .store(provider.storage())
         .expect("Error storing signature keys in key store.");
-
     (
         CredentialWithKey {
             credential: credential.into(),
@@ -369,66 +346,23 @@ fn generate_key_package(
     credential_with_key: CredentialWithKey,
 ) -> KeyPackageBundle {
     KeyPackage::builder()
-        .build(
-            ciphersuite,
-            provider,
-            signer,
-            credential_with_key,
-        )
+        .build(ciphersuite, provider, signer, credential_with_key)
         .unwrap()
 }
 ```
 
-Run the example:
+</CodeGroup>
 
-```bash
-cargo run
-```
+## Key Concepts
 
-You should see:
+- **Credentials**: Identity information for participants
+- **Key Packages**: Pre-generated cryptographic material for asynchronous joins
+- **Welcome Message**: Invitation to join an existing group
+- **Ratchet Tree**: The group's public key structure (exported and shared out-of-band)
+- **Application Messages**: Encrypted content messages
 
-```
-✅ Successfully created a two-party MLS group!
-   Sasha's group ID: ...
-   Maxim's group ID: ...
-```
+## Next Steps
 
-## Key concepts recap
-
-<Steps>
-  <Step title="Credentials identify participants">
-    Each participant needs a credential (identity) and signing keys to authenticate their actions in the group.
-  </Step>
-  
-  <Step title="Key packages enable async joins">
-    Key packages allow group creators to add members without requiring them to be online. Members publish key packages to a server in advance.
-  </Step>
-  
-  <Step title="Welcome messages contain secrets">
-    When adding a member, the group creator generates a Welcome message containing all the cryptographic secrets the new member needs to join.
-  </Step>
-  
-  <Step title="Commits update group state">
-    All group changes (adding/removing members, updates) are done via Commit messages that must be merged to take effect.
-  </Step>
-</Steps>
-
-## Next steps
-
-<CardGroup cols={2}>
-  <Card title="Send messages" icon="message" href="/user-manual/sending-messages">
-    Learn how to send encrypted application messages in your group
-  </Card>
-  
-  <Card title="Managing members" icon="users" href="/user-manual/managing-members">
-    Add and remove members from groups
-  </Card>
-  
-  <Card title="Group configuration" icon="gear" href="/user-manual/group-configuration">
-    Customize group parameters and policies
-  </Card>
-  
-  <Card title="Process messages" icon="inbox" href="/user-manual/processing-messages">
-    Handle incoming messages and group updates
-  </Card>
-</CardGroup>
+- Learn about [group chat](/examples/group-chat) with multiple participants
+- Explore [server integration](/examples/server-integration) for message delivery
+- Implement [key rotation](/examples/key-rotation) for forward secrecy

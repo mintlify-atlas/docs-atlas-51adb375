@@ -1,0 +1,185 @@
+---
+title: 'Custom proposals'
+description: 'Define and use application-specific proposal types'
+icon: 'puzzle-piece'
+---
+
+OpenMLS allows applications to define custom proposal types beyond those specified in RFC 9420. This enables domain-specific group operations while maintaining compatibility with the MLS protocol.
+
+## Overview
+
+Custom proposals contain arbitrary application-defined data that can be included in commits. The application is responsible for:
+
+- Defining proposal type values that don't collide with RFC 9420 types
+- Making policy decisions about custom proposals
+- Handling custom proposal data
+
+<Note>
+For private use within a single application, use proposal type values in the range `0xF000` to `0xFFFF` as reserved by RFC 9420.
+</Note>
+
+## Defining a custom proposal type
+
+First, define your custom proposal type and configure group capabilities to support it:
+
+```rust
+// Define a custom proposal type in the reserved range
+let custom_proposal_type = 0xFFFF;
+
+// Define capabilities supporting the custom proposal type
+let capabilities = Capabilities::new(
+    None,
+    None,
+    None,
+    Some(&[ProposalType::Custom(custom_proposal_type)]),
+    None,
+);
+
+// Generate KeyPackage that signals support for the custom proposal type
+let bob_key_package = KeyPackageBuilder::new()
+    .leaf_node_capabilities(capabilities.clone())
+    .build(
+        ciphersuite,
+        provider,
+        &signer,
+        credential_with_key,
+    )
+    .unwrap();
+
+// Create a group that supports the custom proposal type
+let mut alice_group = MlsGroup::builder()
+    .with_capabilities(capabilities.clone())
+    .ciphersuite(ciphersuite)
+    .build(provider, &signer, credential_with_key)
+    .unwrap();
+```
+
+## Creating and sending custom proposals
+
+Once capabilities are configured, create and send custom proposals:
+
+```rust
+// Create a custom proposal with application-defined payload
+let custom_proposal_payload = vec![0, 1, 2, 3];
+let custom_proposal =
+    CustomProposal::new(custom_proposal_type, custom_proposal_payload.clone());
+
+// Send the proposal by reference
+let (custom_proposal_message, _proposal_ref) = alice_group
+    .propose_custom_proposal_by_reference(
+        provider,
+        &signer,
+        custom_proposal.clone(),
+    )
+    .unwrap();
+```
+
+<Tip>
+You can also use `propose_custom_proposal_by_value()` to include the proposal inline rather than by reference.
+</Tip>
+
+## Processing custom proposals
+
+Receivers process custom proposals like any other proposal:
+
+```rust
+// Process the custom proposal message
+let processed_message = bob_group
+    .process_message(
+        provider,
+        custom_proposal_message.into_protocol_message().unwrap(),
+    )
+    .unwrap();
+
+let ProcessedMessageContent::ProposalMessage(proposal) = processed_message.into_content()
+else {
+    panic!("Unexpected message type");
+};
+
+// Store the proposal for later commitment
+bob_group
+    .store_pending_proposal(provider.storage(), *proposal)
+    .unwrap();
+```
+
+## Committing to custom proposals
+
+Commit to pending custom proposals using the standard commit flow:
+
+```rust
+// Commit to all pending proposals (including custom ones)
+let (commit, _, _) = alice_group
+    .commit_to_pending_proposals(provider, &signer)
+    .unwrap();
+
+// Process the commit on the receiver side
+let processed_message = bob_group
+    .process_message(provider, commit.into_protocol_message().unwrap())
+    .unwrap();
+
+let staged_commit = match processed_message.into_content() {
+    ProcessedMessageContent::StagedCommitMessage(staged_commit) => staged_commit,
+    _ => panic!("Unexpected message type"),
+};
+```
+
+## Inspecting custom proposals in commits
+
+Applications can inspect custom proposals in staged commits to make policy decisions:
+
+```rust
+// Check that the proposal is present in the staged commit
+let has_custom_proposal = staged_commit.queued_proposals().any(|qp| {
+    let Proposal::Custom(custom_proposal) = qp.proposal() else {
+        return false;
+    };
+    custom_proposal.proposal_type() == custom_proposal_type
+        && custom_proposal.payload() == custom_proposal_payload
+});
+
+// Application can decide whether to merge based on custom proposals
+if has_custom_proposal {
+    bob_group
+        .merge_staged_commit(provider, *staged_commit)
+        .unwrap();
+}
+```
+
+## Application responsibilities
+
+When using custom proposals, applications must handle:
+
+<Steps>
+  <Step title="Type management">
+    Ensure custom proposal type values don't conflict with RFC 9420 types or other applications.
+  </Step>
+  
+  <Step title="Capability negotiation">
+    All group members must advertise support for custom proposal types in their capabilities.
+  </Step>
+  
+  <Step title="Policy enforcement">
+    Decide whether to include custom proposals in commits and whether to accept commits containing them.
+  </Step>
+  
+  <Step title="Data handling">
+    Parse and validate custom proposal payloads according to application requirements.
+  </Step>
+</Steps>
+
+<Warning>
+Custom proposals are not automatically validated by OpenMLS. Applications are responsible for all validation, policy decisions, and semantic interpretation of custom proposal data.
+</Warning>
+
+## Best practices
+
+- **Type allocation**: Use the `0xF000-0xFFFF` range for private applications. For standardized extensions, coordinate with the MLS community.
+- **Capability checking**: Verify all group members support your custom proposal type before sending.
+- **Versioning**: Include version information in custom proposal payloads to support protocol evolution.
+- **Documentation**: Clearly document the semantics and expected behavior of custom proposal types.
+
+## Related
+
+- [Commit Builder](/api/messages/commits) - Advanced commit construction
+- [Group Configuration](/user-manual/group-configuration) - Capability configuration
+- [RFC 9420 Section 17.4](https://www.rfc-editor.org/rfc/rfc9420.html#section-17.4) - Proposal type registry

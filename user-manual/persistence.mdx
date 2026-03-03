@@ -1,0 +1,440 @@
+---
+title: Persistence
+description: Store and load MLS group state with OpenMLS storage providers
+---
+
+OpenMLS continuously persists group state to a configured storage provider. This allows groups to be loaded later and ensures critical key material is properly managed for forward secrecy.
+
+## Storage provider overview
+
+All group operations interact with a `StorageProvider` that handles:
+
+- Group state persistence
+- Key material storage and deletion
+- Proposal store management
+- Epoch secrets and resumption PSKs
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+
+// Create a provider with storage
+let provider = OpenMlsRustCrypto::default();
+
+// Create a group - automatically stored
+let alice_group = MlsGroup::new(
+    &provider,
+    &alice_signature_keys,
+    &mls_group_create_config,
+    alice_credential_with_key,
+)?;
+
+// Group state is now persisted
+```
+
+## Loading groups
+
+Groups can be loaded from storage using their group ID:
+
+```rust
+use openmls::prelude::*;
+
+let group_id = alice_group.group_id().clone();
+
+// Later, in a different session...
+let loaded_group = MlsGroup::load(
+    provider.storage(),
+    &group_id,
+)?;
+
+if let Some(group) = loaded_group {
+    println!("Group loaded successfully");
+    println!("Current epoch: {}", group.epoch());
+} else {
+    println!("Group not found in storage");
+}
+```
+
+<Note>
+For loading to work, the group must have been stored previously through normal group operations or an explicit call to `store()`.
+</Note>
+
+## Automatic persistence
+
+OpenMLS automatically writes group state after most operations:
+
+```rust
+use openmls::prelude::*;
+
+// Creates and stores the group
+let mut alice_group = MlsGroup::new(
+    &provider,
+    &alice_signature_keys,
+    &config,
+    credential,
+)?;
+
+// Automatically updates storage
+alice_group.add_members(
+    &provider,
+    &alice_signature_keys,
+    &[bob_key_package],
+)?;
+
+// Automatically updates storage
+alice_group.self_update(
+    &provider,
+    &alice_signature_keys,
+    LeafNodeParameters::default(),
+)?;
+
+// No manual save needed - all operations persist automatically
+```
+
+## Explicit storage operations
+
+You can also explicitly store and delete groups:
+
+```rust
+use openmls::prelude::*;
+
+// Explicitly store a group
+alice_group.store(provider.storage())?;
+
+// Delete a group from storage
+alice_group.delete(provider.storage())?;
+```
+
+<Warning>
+Deleting a group removes all associated state including key material. This operation is irreversible and should be used carefully.
+</Warning>
+
+## Forward secrecy considerations
+
+OpenMLS implements forward secrecy by deleting old key material:
+
+```rust
+use openmls::prelude::*;
+
+// When processing an encrypted message:
+let processed = alice_group.process_message(&provider, message)?;
+
+// Old decryption keys are immediately deleted from storage
+// Even if the storage backend is compromised later,
+// old messages cannot be decrypted
+```
+
+### Storage provider requirements
+
+<Warning>
+**Critical for forward secrecy**: Storage providers MUST ensure that values deleted through any `delete_*` functions are **irrevocably deleted** with no copies kept.
+
+This includes:
+- `delete_encryption_key_pair()`
+- `delete_epoch_keypairs()`
+- `delete_own_leaf_nodes()`
+- Other delete operations
+
+Keeping copies or soft-deleting would compromise forward secrecy.
+</Warning>
+
+## What gets stored
+
+The storage provider persists multiple types of data:
+
+### Group state
+
+```rust
+// Core group state
+- Group ID
+- Current epoch
+- Group context
+- Ratchet tree
+- Proposal store
+- Configuration
+```
+
+### Key material
+
+```rust
+// Encryption keys
+- Current epoch keypairs
+- HPKE private keys
+- Signature key pairs
+
+// Secret state
+- Message secrets
+- Epoch secrets
+- Resumption PSKs
+```
+
+### Proposals and messages
+
+```rust
+// Pending state
+- Queued proposals
+- Own leaf nodes (for pending updates)
+```
+
+## Storage backends
+
+OpenMLS supports different storage backends:
+
+### In-memory storage
+
+```rust
+use openmls_rust_crypto::OpenMlsRustCrypto;
+
+// Default: in-memory storage (lost when process exits)
+let provider = OpenMlsRustCrypto::default();
+```
+
+<Warning>
+In-memory storage loses all data when the process exits. Use persistent storage for production applications.
+</Warning>
+
+### Persistent storage
+
+Implement the `StorageProvider` trait for your database:
+
+```rust
+use openmls::storage::StorageProvider;
+
+struct MyDatabaseStorage {
+    // Your database connection
+}
+
+impl StorageProvider for MyDatabaseStorage {
+    type Error = MyError;
+    
+    fn write_group_state(
+        &self,
+        group_id: &GroupId,
+        group_state: &MlsGroupState,
+    ) -> Result<(), Self::Error> {
+        // Store in your database
+    }
+    
+    fn group_state(
+        &self,
+        group_id: &GroupId,
+    ) -> Result<Option<MlsGroupState>, Self::Error> {
+        // Load from your database
+    }
+    
+    fn delete_group_state(
+        &self,
+        group_id: &GroupId,
+    ) -> Result<(), Self::Error> {
+        // Irrevocably delete from database
+    }
+    
+    // Implement other required methods...
+}
+```
+
+## Key package management
+
+Key packages are also managed through storage:
+
+```rust
+use openmls::prelude::*;
+
+// Key packages are automatically stored
+let key_package = KeyPackage::builder()
+    .build(ciphersuite, &provider, signer, credential)?;
+
+// Key package bundle is in storage
+// When used in a Welcome, it's automatically deleted (unless last resort)
+```
+
+<Note>
+Last resort key packages are NOT deleted from storage when used. This allows them to be reused for multiple welcomes.
+</Note>
+
+## Past epoch secrets
+
+When `max_past_epochs` is configured, old secrets are retained:
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .max_past_epochs(3)  // Keep secrets for 3 past epochs
+    .build();
+
+let alice_group = MlsGroup::new(&provider, signer, &config, credential)?;
+
+// Message secrets for the last 3 epochs are kept in storage
+// Older secrets are deleted for forward secrecy
+```
+
+## Resumption PSKs
+
+Resumption PSKs are stored per epoch:
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .number_of_resumption_psks(5)
+    .build();
+
+let alice_group = MlsGroup::new(&provider, signer, &config, credential)?;
+
+// After each epoch transition, resumption PSK is stored
+// Only the last 5 are kept in storage
+```
+
+## Migration and backup
+
+When migrating to a new device or backing up:
+
+```rust
+use openmls::prelude::*;
+
+// Export group state
+let group_id = alice_group.group_id().clone();
+let exported_state = alice_group.export_secret(
+    provider.crypto(),
+    "backup",
+    b"backup-context",
+    32,
+)?;
+
+// On new device, you'll need to:
+// 1. Transfer all storage data securely
+// 2. Import signature keys
+// 3. Load the group
+
+let restored_group = MlsGroup::load(provider.storage(), &group_id)?;
+```
+
+<Warning>
+Group state includes sensitive key material. Ensure backups are encrypted and stored securely. Prefer server-side storage over client backups when possible.
+</Warning>
+
+## Storage best practices
+
+<Steps>
+
+### Use persistent storage
+
+Implement a proper database backend:
+
+```rust
+// Good: Persistent database
+let provider = MyDatabaseProvider::new(db_connection);
+
+// Bad: In-memory (for production)
+let provider = OpenMlsRustCrypto::default();
+```
+
+### Implement atomic operations
+
+Ensure storage operations are atomic:
+
+```rust
+impl StorageProvider for MyStorage {
+    fn write_group_state(
+        &self,
+        group_id: &GroupId,
+        state: &MlsGroupState,
+    ) -> Result<(), Self::Error> {
+        // Use database transaction
+        let tx = self.db.transaction()?;
+        tx.write(group_id, state)?;
+        tx.commit()?;  // Atomic commit
+        Ok(())
+    }
+}
+```
+
+### Ensure secure deletion
+
+Properly delete key material:
+
+```rust
+impl StorageProvider for MyStorage {
+    fn delete_encryption_key_pair(
+        &self,
+        public_key: &[u8],
+    ) -> Result<(), Self::Error> {
+        // Not sufficient:
+        // self.db.mark_deleted(public_key)?;
+        
+        // Correct: Irrevocable deletion
+        self.db.permanently_delete(public_key)?;
+        self.db.purge_deleted_records()?;
+        Ok(())
+    }
+}
+```
+
+### Handle concurrent access
+
+Protect against race conditions:
+
+```rust
+use std::sync::Mutex;
+
+struct MyStorage {
+    db: Mutex<Database>,
+}
+
+impl StorageProvider for MyStorage {
+    fn write_group_state(
+        &self,
+        group_id: &GroupId,
+        state: &MlsGroupState,
+    ) -> Result<(), Self::Error> {
+        let db = self.db.lock().unwrap();
+        db.write(group_id, state)?;
+        Ok(())
+    }
+}
+```
+
+</Steps>
+
+## Storage errors
+
+Handle storage errors appropriately:
+
+```rust
+use openmls::prelude::*;
+
+let result = MlsGroup::load(provider.storage(), &group_id);
+
+match result {
+    Ok(Some(group)) => {
+        // Group loaded successfully
+    }
+    Ok(None) => {
+        // Group not found in storage
+        println!("Group does not exist");
+    }
+    Err(e) => {
+        // Storage backend error
+        eprintln!("Storage error: {:?}", e);
+    }
+}
+```
+
+## Related types
+
+- `StorageProvider` - Trait for implementing storage backends
+- `MlsGroup::load()` - Load group from storage
+- `MlsGroup::store()` - Explicitly store group
+- `MlsGroup::delete()` - Delete group from storage
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Group configuration" href="./group-configuration">
+    Configure past epoch and PSK storage
+  </Card>
+  <Card title="Key updates" href="./key-updates">
+    Understand key rotation and forward secrecy
+  </Card>
+</CardGroup>

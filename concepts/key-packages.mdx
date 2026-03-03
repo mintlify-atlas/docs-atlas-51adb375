@@ -1,0 +1,466 @@
+---
+title: Key packages
+description: Understand key packages and how they enable asynchronous group operations in OpenMLS
+---
+
+Key packages are pre-published bundles of cryptographic key material that enable asynchronous addition of clients to MLS groups. They are a fundamental building block for MLS's asynchronous design.
+
+## What are key packages?
+
+A key package is a signed data structure containing:
+
+- **Protocol version** and ciphersuite the client supports
+- **Init key**: A public HPKE encryption key for encrypting group secrets
+- **Leaf node**: Contains the client's credential, encryption key, and capabilities
+- **Lifetime**: The validity period for the key package
+- **Extensions**: Additional metadata and features
+- **Signature**: Authentication over the entire key package
+
+Key packages enable asynchronous workflows where clients can be added to groups without being online.
+
+## Key package structure
+
+The key package structure from `openmls/src/key_packages/mod.rs:148`:
+
+```rust
+struct KeyPackageTbs {
+    protocol_version: ProtocolVersion,
+    ciphersuite: Ciphersuite,
+    init_key: InitKey,
+    leaf_node: LeafNode,
+    extensions: Extensions<KeyPackage>,
+}
+```
+
+This unsigned payload is signed to create the final `KeyPackage`:
+
+```rust
+pub struct KeyPackage {
+    payload: KeyPackageTbs,
+    signature: Signature,
+}
+```
+
+## Creating key packages
+
+Use the `KeyPackage::builder()` to create key packages:
+
+```rust
+use openmls::prelude::*;
+use openmls_rust_crypto::OpenMlsRustCrypto;
+use openmls_basic_credential::SignatureKeyPair;
+
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+let provider = OpenMlsRustCrypto::default();
+
+// Create credential
+let credential = BasicCredential::new("alice".into());
+let signature_keys = SignatureKeyPair::new(
+    ciphersuite.signature_algorithm()
+)?;
+signature_keys.store(provider.storage())?;
+
+let credential_with_key = CredentialWithKey {
+    credential: credential.into(),
+    signature_key: signature_keys.public().into(),
+};
+
+// Create key package
+let key_package = KeyPackage::builder()
+    .build(
+        ciphersuite,
+        &provider,
+        &signature_keys,
+        credential_with_key,
+    )?;
+```
+
+The builder automatically:
+- Generates a fresh HPKE init key pair
+- Creates a leaf node with an encryption key
+- Stores private keys in the provider's storage
+- Signs the key package with the signature key
+
+## Key package bundle
+
+The `build()` method returns a `KeyPackageBundle` that includes private keys:
+
+```rust
+pub struct KeyPackageBundle {
+    pub(crate) key_package: KeyPackage,
+    pub(crate) private_init_key: HpkePrivateKey,
+    pub(crate) private_encryption_key: EncryptionPrivateKey,
+}
+```
+
+The bundle ensures private keys are kept together with the public key package:
+
+```rust
+// Get the public key package for publishing
+let public_kp = key_package.key_package();
+
+// Private keys remain in the bundle for later use
+let init_private = key_package.init_private_key();
+```
+
+<Warning>
+  Keep the `KeyPackageBundle` secure. It contains private key material needed to process Welcome messages when the key package is used to add you to a group.
+</Warning>
+
+## Configuring key packages
+
+The builder pattern allows extensive configuration:
+
+### Setting lifetime
+
+Key packages have a validity period:
+
+```rust
+use openmls::prelude::*;
+
+let lifetime = Lifetime::new(
+    1640000000, // not_before timestamp
+    1672000000, // not_after timestamp  
+);
+
+let key_package = KeyPackage::builder()
+    .key_package_lifetime(lifetime)
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+```
+
+By default, key packages use a reasonable default lifetime.
+
+### Adding extensions
+
+Key packages can include extensions:
+
+```rust
+use openmls::prelude::*;
+
+let extensions = Extensions::single(
+    Extension::ApplicationId(ApplicationIdExtension::new(b"myapp"))
+)?;
+
+let key_package = KeyPackage::builder()
+    .key_package_extensions(extensions)
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+```
+
+### Setting capabilities
+
+Advertise supported features in the leaf node capabilities:
+
+```rust
+use openmls::prelude::*;
+
+let capabilities = Capabilities::new(
+    Some(&[ProtocolVersion::Mls10]),
+    Some(&[
+        Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+        Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519,
+    ]),
+    Some(&[ExtensionType::ApplicationId]),
+    Some(&[ProposalType::Add, ProposalType::Remove]),
+    Some(&[CredentialType::Basic]),
+);
+
+let key_package = KeyPackage::builder()
+    .leaf_node_capabilities(capabilities)
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+```
+
+### Leaf node extensions
+
+Add extensions to the embedded leaf node:
+
+```rust
+use openmls::prelude::*;
+
+let leaf_extensions = Extensions::single(
+    Extension::ApplicationId(ApplicationIdExtension::new(b"myapp"))
+)?;
+
+let key_package = KeyPackage::builder()
+    .leaf_node_extensions(leaf_extensions)
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+```
+
+### Last resort key packages
+
+Mark a key package as a last resort option:
+
+```rust
+let key_package = KeyPackage::builder()
+    .mark_as_last_resort()
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+
+// Check if a key package is marked as last resort
+if key_package.key_package().last_resort() {
+    println!("This is a last resort key package");
+}
+```
+
+Last resort key packages can be reused when no other key packages are available.
+
+## Using key packages
+
+### Publishing key packages
+
+Clients publish key packages to a server (Delivery Service) so others can use them:
+
+```rust
+// Create and store key package
+let key_package_bundle = KeyPackage::builder()
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+
+// Serialize the public key package for publishing
+let serialized = key_package_bundle
+    .key_package()
+    .tls_serialize_detached()?;
+
+// Upload to server
+delivery_service.publish_key_package(&serialized).await?;
+```
+
+### Retrieving key packages
+
+When adding members to a group, fetch their key packages:
+
+```rust
+use openmls::prelude::*;
+
+// Fetch serialized key package from server
+let bytes = delivery_service.fetch_key_package("bob").await?;
+
+// Deserialize and validate
+let key_package_in = KeyPackageIn::tls_deserialize(&mut bytes.as_slice())?;
+
+let key_package = key_package_in.validate(
+    provider.crypto(),
+    ProtocolVersion::Mls10,
+)?;
+
+// Use the key package to add the member
+let (message, welcome, _) = group.add_members(
+    &provider,
+    &signer,
+    &[key_package],
+)?;
+```
+
+### Processing Welcome messages
+
+When your key package is used to add you to a group, you receive a Welcome message:
+
+```rust
+use openmls::prelude::*;
+
+// Receive Welcome message
+let welcome = MlsMessageIn::tls_deserialize(&mut welcome_bytes.as_slice())?;
+
+// Join the group using the Welcome
+let group = StagedWelcome::new_from_welcome(
+    &provider,
+    &MlsGroupJoinConfig::default(),
+    welcome,
+    None,
+)?.into_group(&provider)?;
+
+// The key package bundle's private keys are automatically retrieved from storage
+```
+
+OpenMLS automatically retrieves the `KeyPackageBundle` from storage using the key package reference.
+
+## Key package reference
+
+Each key package has a unique reference (hash):
+
+```rust
+use openmls::prelude::*;
+
+// Compute the key package reference
+let kp_ref = key_package.key_package().hash_ref(provider.crypto())?;
+
+// The reference is used as a storage key
+let bytes = kp_ref.as_slice();
+```
+
+Key package references:
+- Uniquely identify key packages
+- Are used to store and retrieve `KeyPackageBundle`s
+- Appear in Welcome messages to indicate which key package was used
+
+## Key package best practices
+
+### One-time use
+
+Key packages should be used only once:
+
+<Note>
+  Key packages are meant to be used only once. Generate and publish multiple key packages to support multiple group joins. Only reuse key packages marked as "last resort" when no fresh ones are available.
+</Note>
+
+```rust
+// Generate multiple key packages
+let mut key_packages = Vec::new();
+
+for _ in 0..10 {
+    let kp = KeyPackage::builder()
+        .build(
+            ciphersuite,
+            &provider,
+            &signer,
+            credential_with_key.clone(),
+        )?;
+    key_packages.push(kp);
+}
+
+// Publish all of them
+for kp in &key_packages {
+    let serialized = kp.key_package().tls_serialize_detached()?;
+    delivery_service.publish_key_package(&serialized).await?;
+}
+```
+
+### Unique init keys
+
+Each key package must have a unique init key:
+
+```rust
+// The builder automatically generates a fresh init key
+let kp1 = KeyPackage::builder().build(/* ... */)?;
+let kp2 = KeyPackage::builder().build(/* ... */)?;
+
+// kp1 and kp2 have different init keys
+assert_ne!(
+    kp1.key_package().hpke_init_key().as_slice(),
+    kp2.key_package().hpke_init_key().as_slice()
+);
+```
+
+The builder ensures uniqueness by generating fresh randomness for each key package.
+
+### Credential consistency
+
+All key packages for a client should typically use the same credential:
+
+```rust
+// Create credential once
+let credential_with_key = /* ... */;
+
+// Reuse across multiple key packages  
+for _ in 0..10 {
+    let kp = KeyPackage::builder()
+        .build(
+            ciphersuite,
+            &provider,
+            &signer,
+            credential_with_key.clone(), // Same credential
+        )?;
+}
+```
+
+## Inspecting key packages
+
+Query key package properties:
+
+```rust
+let kp = key_package.key_package();
+
+// Get ciphersuite
+let cs = kp.ciphersuite();
+
+// Get embedded leaf node
+let leaf = kp.leaf_node();
+let credential = leaf.credential();
+let encryption_key = leaf.encryption_key();
+
+// Get init key
+let init_key = kp.hpke_init_key();
+
+// Get lifetime
+let lifetime = kp.life_time();
+
+// Get extensions
+let extensions = kp.extensions();
+
+// Check if last resort
+let is_last_resort = kp.last_resort();
+```
+
+## Storage and retrieval
+
+Key package bundles are automatically stored when created:
+
+```rust
+// Creation automatically stores the bundle
+let kp_bundle = KeyPackage::builder()
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?; // Stored in provider.storage()
+
+// Later, retrieve it by reference
+let kp_ref = kp_bundle.key_package().hash_ref(provider.crypto())?;
+
+let retrieved: Option<KeyPackageBundle> = provider
+    .storage()
+    .read(kp_ref.as_slice())?;
+
+if let Some(bundle) = retrieved {
+    // Use the retrieved bundle
+    let init_key = bundle.init_private_key();
+}
+```
+
+## Related concepts
+
+<CardGroup cols={2}>
+  <Card title="Credentials" icon="id-card" href="/concepts/credentials">
+    Learn about credentials embedded in key packages
+  </Card>
+  
+  <Card title="Ciphersuites" icon="lock" href="/concepts/ciphersuites">
+    Understand ciphersuite selection for key packages
+  </Card>
+  
+  <Card title="Groups" icon="users" href="/essentials/groups">
+    See how key packages are used to add members to groups
+  </Card>
+  
+  <Card title="Welcome messages" icon="envelope" href="/essentials/welcome-messages">
+    Learn how key packages are used when joining groups
+  </Card>
+</CardGroup>

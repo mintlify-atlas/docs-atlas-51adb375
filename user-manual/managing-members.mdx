@@ -1,0 +1,309 @@
+---
+title: Managing members
+description: Add and remove members from MLS groups in OpenMLS
+---
+
+OpenMLS provides flexible APIs for managing group membership. You can add or remove members immediately with a commit, or propose changes for later approval.
+
+## Adding members
+
+Members are added to a group by providing their key packages. The key packages should be fetched from the delivery service.
+
+### Immediate add operation
+
+The `add_members()` function adds members atomically and includes a path update:
+
+```rust
+use openmls::prelude::*;
+
+let bob_key_package = // ... fetch from delivery service
+
+let (commit_message, welcome_message, group_info) = alice_group.add_members(
+    provider,
+    &alice_signature_keys,
+    &[bob_key_package],
+)?;
+
+// Send commit to existing members
+delivery_service.send_to_members(commit_message)?;
+
+// Send welcome to new members
+delivery_service.send_to_new_members(welcome_message)?;
+
+// Optional: send group_info if ratchet tree extension is enabled
+if let Some(group_info) = group_info {
+    delivery_service.send_group_info(group_info)?;
+}
+```
+
+The function returns:
+- `MlsMessageOut` - Commit message for existing members
+- `MlsMessageOut` - Welcome message for new members  
+- `Option<GroupInfo>` - Group info if ratchet tree extension is enabled
+
+### Adding members without update
+
+For better performance, use `add_members_without_update()` which only includes a path if required by pending proposals:
+
+```rust
+let (commit_message, welcome_message, group_info) = alice_group.add_members_without_update(
+    provider,
+    &alice_signature_keys,
+    &[bob_key_package],
+)?;
+```
+
+<Note>
+Not sending an update means the sender won't achieve post-compromise security with this commit. However, it saves computation and bandwidth, especially with large public keys.
+</Note>
+
+### Using the commit builder
+
+For more control, use the `CommitBuilder` API:
+
+```rust
+use openmls::prelude::*;
+
+let bundle = alice_group
+    .commit_builder()
+    .propose_adds([bob_key_package].into_iter())
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), signer, |_| true)?
+    .stage_commit(provider)?;
+
+let (commit, _, group_info) = bundle.into_contents();
+let welcome = bundle.to_welcome_msg().ok_or("No welcome generated")?;
+```
+
+<Note>
+The `KeyPackage` is wrapped in `Some` because `Option<KeyPackage>` implements `IntoIterator<Item = KeyPackage>`. This means the function also works with any iterator over `KeyPackage` items or a `Vec<KeyPackage>`.
+</Note>
+
+### Proposing to add members
+
+Create an add proposal without immediately committing:
+
+```rust
+let proposal_message = alice_group.propose_add_member(
+    provider,
+    &alice_signature_keys,
+    &bob_key_package,
+)?;
+
+// Send proposal to group members
+delivery_service.send_to_members(proposal_message)?;
+```
+
+## External add proposals
+
+Outside parties can propose adding themselves or others if they're registered in the `ExternalSendersExtension`.
+
+### External join proposal
+
+A party can propose adding themselves:
+
+```rust
+use openmls::prelude::*;
+
+let proposal = JoinProposal::new(
+    bob_key_package,
+    group_info,
+    &bob_signature_keys,
+)?;
+
+let proposal_message = proposal.into_plaintext_message(
+    provider.crypto(),
+    group_info.group_context(),
+)?;
+
+// Send to group members for validation
+delivery_service.send_to_members(proposal_message)?;
+```
+
+### Processing external proposals
+
+Group members receive and validate external proposals:
+
+```rust
+let processed_message = alice_group.process_message(
+    provider,
+    protocol_message,
+)?;
+
+if let ProcessedMessageContent::ExternalJoinProposalMessage(proposal) = processed_message.into_content() {
+    // Application validates and decides whether to accept
+    alice_group.store_pending_proposal(provider.storage(), *proposal)?;
+}
+```
+
+## Removing members
+
+Members can be removed by providing their leaf index.
+
+### Immediate remove operation
+
+Remove members atomically:
+
+```rust
+use openmls::prelude::*;
+
+// Get the member's key package reference
+let bob_index = alice_group
+    .members()
+    .find(|m| m.credential == bob_credential)
+    .map(|m| m.index)
+    .ok_or("Member not found")?;
+
+let (commit_message, optional_welcome, group_info) = alice_group.remove_members(
+    provider,
+    &alice_signature_keys,
+    &[bob_index],
+)?;
+
+// Send commit to remaining members
+delivery_service.send_to_members(commit_message)?;
+
+// If there were pending add proposals, send welcome to new members
+if let Some(welcome) = optional_welcome {
+    delivery_service.send_to_new_members(welcome)?;
+}
+```
+
+<Note>
+Even though members were removed, the commit might also cover pending add proposals. That's why an optional `Welcome` message is returned.
+</Note>
+
+### Proposing to remove members
+
+Create a remove proposal:
+
+```rust
+let proposal_message = alice_group.propose_remove_member(
+    provider,
+    &alice_signature_keys,
+    bob_index,
+)?;
+
+delivery_service.send_to_members(proposal_message)?;
+```
+
+## Leaving a group
+
+Members can leave by creating a remove proposal for themselves:
+
+```rust
+let leave_proposal = bob_group.leave_group(
+    provider,
+    &bob_signature_keys,
+)?;
+
+delivery_service.send_to_members(leave_proposal)?;
+```
+
+### Self-remove proposal
+
+Alternatively, use a self-remove proposal (must be sent as `PublicMessage`):
+
+```rust
+let self_remove_proposal = bob_group.leave_group_via_self_remove(
+    provider,
+    &bob_signature_keys,
+)?;
+
+delivery_service.send_to_members(self_remove_proposal)?;
+```
+
+<Warning>
+`leave_group_via_self_remove()` can only be used if the group's wire format policy allows `PublicMessage`s. It will fail if the policy is `AlwaysCiphertext`.
+</Warning>
+
+## Being removed from a group
+
+When you're removed, you can still process the final commit:
+
+```rust
+let processed_message = bob_group.process_message(provider, message)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = processed_message.into_content() {
+    if staged_commit.self_removed() {
+        println!("We were removed from the group");
+    }
+    
+    // Merge the commit - group will become inactive
+    bob_group.merge_staged_commit(provider, *staged_commit)?;
+    
+    // Group is now inactive, can only be used for inspection
+    assert!(!bob_group.is_active());
+}
+```
+
+<Note>
+After merging a commit that removes you, the group becomes inactive. You can still examine the membership list, but you cannot create or process new messages.
+</Note>
+
+## Interpreting remove operations
+
+Use the `RemoveOperation` enum to understand the context of a removal:
+
+```rust
+use openmls::prelude::*;
+
+let processed_message = alice_group.process_message(provider, message)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = processed_message.into_content() {
+    for remove_proposal in staged_commit.remove_proposals() {
+        let operation = RemoveOperation::new(remove_proposal.clone(), &alice_group)?;
+        
+        match operation {
+            RemoveOperation::WeLeft => println!("We left the group"),
+            RemoveOperation::WeWereRemovedBy(sender) => println!("We were removed by {:?}", sender),
+            RemoveOperation::TheyLeft(index) => println!("Member {} left", index),
+            RemoveOperation::TheyWereRemovedBy((index, sender)) => {
+                println!("Member {} was removed by {:?}", index, sender)
+            }
+            RemoveOperation::WeRemovedThem(index) => println!("We removed member {}", index),
+        }
+    }
+}
+```
+
+## Swapping members
+
+Replace members that are out of sync with new members:
+
+```rust
+use openmls::prelude::*;
+
+let out_of_sync_indices = vec![member1_index, member2_index];
+let replacement_key_packages = vec![new_kp1, new_kp2];
+
+let bundle = alice_group.swap_members(
+    provider,
+    &alice_signature_keys,
+    &out_of_sync_indices,
+    &replacement_key_packages,
+)?;
+```
+
+<Warning>
+The `swap_members()` function does not enforce that removed members and new members correspond. It's up to the application to ensure the correct members are being replaced.
+</Warning>
+
+## Related types
+
+- `MlsGroup::add_members()` - Add members with path update
+- `MlsGroup::add_members_without_update()` - Add members without forced path
+- `MlsGroup::remove_members()` - Remove members from group
+- `MlsGroup::leave_group()` - Leave the group
+- `RemoveOperation` - Classifies the type of remove operation
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Sending messages" href="./sending-messages">
+    Send application messages to group members
+  </Card>
+  <Card title="Processing messages" href="./processing-messages">
+    Handle incoming proposals and commits
+  </Card>
+</CardGroup>

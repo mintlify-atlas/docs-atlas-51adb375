@@ -1,0 +1,444 @@
+---
+title: StagedCommit
+description: Inspect and validate commits before merging them into group state
+---
+
+`StagedCommit` represents a commit that has been validated but not yet merged into the group state. This allows inspection of proposed changes before applying them.
+
+## Overview
+
+When processing a commit (either created locally or received from another member), OpenMLS creates a `StagedCommit` that contains:
+
+- All proposals covered by the commit
+- The provisional group state after the commit
+- Credentials that need verification
+- Epoch secrets for the new epoch
+
+You can inspect the staged commit before merging it with `merge_staged_commit()`.
+
+## Accessing staged commits
+
+### From processing messages
+
+```rust
+let processed = group.process_message(provider, message)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = processed.into_content() {
+    // Inspect the commit
+    for proposal in staged_commit.queued_proposals() {
+        println!("Proposal: {:?}", proposal.proposal());
+    }
+    
+    // Merge when ready
+    group.merge_staged_commit(provider, *staged_commit)?;
+}
+```
+
+### From pending commits
+
+```rust
+if let Some(staged_commit) = group.pending_commit() {
+    // Inspect the pending commit
+    let epoch = staged_commit.epoch();
+}
+```
+
+## Proposal inspection
+
+### queued_proposals
+
+Returns an iterator over all proposals covered by the commit.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = &QueuedProposal>">
+  Iterator over all queued proposals
+</ResponseField>
+
+```rust
+for proposal in staged_commit.queued_proposals() {
+    match proposal.proposal() {
+        Proposal::Add(add) => println!("Adding member"),
+        Proposal::Remove(remove) => println!("Removing {}", remove.removed.u32()),
+        Proposal::Update(_) => println!("Member update"),
+        _ => {}
+    }
+}
+```
+
+### add_proposals
+
+Returns an iterator over Add proposals in the commit.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = QueuedAddProposal>">
+  Iterator over Add proposals
+</ResponseField>
+
+```rust
+for add_proposal in staged_commit.add_proposals() {
+    let key_package = add_proposal.add_proposal().key_package();
+    println!("Adding: {:?}", key_package.leaf_node().credential());
+}
+```
+
+### remove_proposals
+
+Returns an iterator over Remove proposals.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = QueuedRemoveProposal>">
+  Iterator over Remove proposals
+</ResponseField>
+
+```rust
+for remove_proposal in staged_commit.remove_proposals() {
+    let removed_index = remove_proposal.remove_proposal().removed();
+    println!("Removing member at index {}", removed_index.u32());
+}
+```
+
+### update_proposals
+
+Returns an iterator over Update proposals.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = QueuedUpdateProposal>">
+  Iterator over Update proposals
+</ResponseField>
+
+### psk_proposals
+
+Returns an iterator over PreSharedKey proposals.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = QueuedPskProposal>">
+  Iterator over PSK proposals
+</ResponseField>
+
+## Group state inspection
+
+### epoch
+
+Returns the epoch that this commit transitions the group into.
+
+<ResponseField name="GroupEpoch" type="GroupEpoch">
+  The new epoch number
+</ResponseField>
+
+```rust
+let new_epoch = staged_commit.epoch();
+println!("Moving to epoch {}", new_epoch.as_u64());
+```
+
+### group_context
+
+Returns the group context for the new epoch.
+
+<ResponseField name="GroupContext" type="&GroupContext">
+  Reference to the new group context
+</ResponseField>
+
+```rust
+let context = staged_commit.group_context();
+println!("New tree hash: {:x?}", context.tree_hash());
+```
+
+### update_path_leaf_node
+
+Returns the leaf node from the update path if present.
+
+<ResponseField name="Option" type="Option<&LeafNode>">
+  The leaf node from the commit's update path, or `None` if no path was included
+</ResponseField>
+
+```rust
+if let Some(leaf_node) = staged_commit.update_path_leaf_node() {
+    println!("Committer credential: {:?}", leaf_node.credential());
+}
+```
+
+### self_removed
+
+Returns whether the member was removed by this commit.
+
+<ResponseField name="bool" type="bool">
+  `true` if the member was removed, `false` otherwise
+</ResponseField>
+
+```rust
+if staged_commit.self_removed() {
+    println!("We were removed from the group");
+    // Group will transition to Inactive state after merge
+}
+```
+
+## Credential validation
+
+### credentials_to_verify
+
+Returns credentials that the application should verify before merging the commit.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = &Credential>">
+  Iterator over credentials requiring verification
+</ResponseField>
+
+```rust
+for credential in staged_commit.credentials_to_verify() {
+    if !credential_is_valid(credential) {
+        return Err("Invalid credential in commit");
+    }
+}
+
+// All credentials valid, safe to merge
+group.merge_staged_commit(provider, staged_commit)?;
+```
+
+Credentials to verify include:
+- Credentials from Add proposals (new members)
+- Credentials from Update proposals (member updates)
+- Credentials from the update path leaf node (committer)
+- Credentials from external senders in GroupContextExtensions proposals
+
+## Secrets and export
+
+### export_secret
+
+Exports a secret from the new epoch (before merging the commit).
+
+<ParamField path="crypto" type="&CryptoProvider">
+  Cryptographic provider
+</ParamField>
+
+<ParamField path="label" type="&str">
+  Label for the exported secret
+</ParamField>
+
+<ParamField path="context" type="&[u8]">
+  Context bytes for derivation
+</ParamField>
+
+<ParamField path="key_length" type="usize">
+  Desired key length in bytes (max: u16::MAX)
+</ParamField>
+
+<ResponseField name="Result" type="Result<Vec<u8>, ExportSecretError>">
+  Returns the exported secret, or an error if the member was removed or key length is invalid
+</ResponseField>
+
+```rust
+let secret = staged_commit.export_secret(
+    provider.crypto(),
+    "app-secret",
+    b"context",
+    32,
+)?;
+```
+
+<Note>
+Returns an error with `UseAfterEviction` if the commit removed the member from the group.
+</Note>
+
+### epoch_authenticator
+
+Returns the epoch authenticator for the new epoch.
+
+<ResponseField name="Option" type="Option<&EpochAuthenticator>">
+  The epoch authenticator, or `None` if the member was removed
+</ResponseField>
+
+```rust
+if let Some(auth) = staged_commit.epoch_authenticator() {
+    // Use authenticator
+}
+```
+
+### resumption_psk_secret
+
+Returns the resumption PSK secret for the new epoch.
+
+<ResponseField name="Option" type="Option<&ResumptionPskSecret>">
+  The resumption PSK, or `None` if the member was removed
+</ResponseField>
+
+## Ratchet tree export
+
+### export_ratchet_tree
+
+Exports the ratchet tree after applying this commit.
+
+<ParamField path="crypto" type="&impl OpenMlsCrypto">
+  Cryptographic provider
+</ParamField>
+
+<ParamField path="original_tree" type="RatchetTree">
+  The original ratchet tree before the commit
+</ParamField>
+
+<ResponseField name="Result" type="Result<Option<RatchetTree>, TreeSyncFromNodesError>">
+  Returns the new tree if the member remains in the group, `None` if removed
+</ResponseField>
+
+```rust
+let tree = group.export_ratchet_tree();
+if let Some(new_tree) = staged_commit.export_ratchet_tree(provider.crypto(), tree)? {
+    // Export new tree
+}
+```
+
+## Validation workflow
+
+Typical workflow for validating and merging a commit:
+
+```rust
+let processed = group.process_message(provider, message)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = processed.into_content() {
+    // 1. Check if we were removed
+    if staged_commit.self_removed() {
+        println!("We were removed from the group");
+        group.merge_staged_commit(provider, *staged_commit)?;
+        return Ok(()); // Group is now inactive
+    }
+    
+    // 2. Validate credentials
+    for credential in staged_commit.credentials_to_verify() {
+        if !is_valid_credential(credential) {
+            return Err("Invalid credential");
+        }
+    }
+    
+    // 3. Check proposal semantics
+    for proposal in staged_commit.queued_proposals() {
+        match proposal.proposal() {
+            Proposal::Remove(remove) => {
+                if !can_remove_member(remove.removed) {
+                    return Err("Unauthorized removal");
+                }
+            }
+            Proposal::Add(add) => {
+                if group.members().count() >= MAX_MEMBERS {
+                    return Err("Group full");
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    // 4. Export any needed secrets
+    let app_secret = staged_commit.export_secret(
+        provider.crypto(),
+        "app-level-key",
+        b"",
+        32,
+    )?;
+    
+    // 5. Merge the commit
+    group.merge_staged_commit(provider, *staged_commit)?;
+}
+```
+
+## Analyzing membership changes
+
+```rust
+let mut added = Vec::new();
+let mut removed = Vec::new();
+let mut updated = Vec::new();
+
+for proposal in staged_commit.queued_proposals() {
+    match proposal.proposal() {
+        Proposal::Add(add) => {
+            added.push(add.key_package().leaf_node().credential().clone());
+        }
+        Proposal::Remove(remove) => {
+            if let Some(member) = group.member(remove.removed()) {
+                removed.push(member.clone());
+            }
+        }
+        Proposal::Update(update) => {
+            updated.push(update.leaf_node().credential().clone());
+        }
+        _ => {}
+    }
+}
+
+println!("Changes: +{} -{} ~{}", added.len(), removed.len(), updated.len());
+```
+
+## Error handling
+
+### Merging failures
+
+```rust
+match group.merge_staged_commit(provider, staged_commit) {
+    Ok(()) => {
+        println!("Commit merged successfully");
+    }
+    Err(MergeCommitError::StorageError(e)) => {
+        // Handle storage error
+    }
+    Err(e) => {
+        // Other errors
+    }
+}
+```
+
+## Use cases
+
+### Access control enforcement
+
+```rust
+for proposal in staged_commit.queued_proposals() {
+    if let Proposal::Remove(remove) = proposal.proposal() {
+        let remover = proposal.sender();
+        if !has_remove_permission(remover, remove.removed) {
+            return Err("Unauthorized removal attempt");
+        }
+    }
+}
+
+group.merge_staged_commit(provider, staged_commit)?;
+```
+
+### Member limit enforcement
+
+```rust
+let current_members = group.members().count();
+let adds = staged_commit.add_proposals().count();
+let removes = staged_commit.remove_proposals().count();
+
+let new_member_count = current_members + adds - removes;
+if new_member_count > MAX_GROUP_SIZE {
+    return Err("Group size limit exceeded");
+}
+
+group.merge_staged_commit(provider, staged_commit)?;
+```
+
+### Audit logging
+
+```rust
+let epoch = staged_commit.epoch();
+
+for proposal in staged_commit.queued_proposals() {
+    match proposal.proposal() {
+        Proposal::Add(add) => {
+            audit_log.record(
+                epoch,
+                "member_added",
+                add.key_package().leaf_node().credential(),
+            );
+        }
+        Proposal::Remove(remove) => {
+            audit_log.record(epoch, "member_removed", remove.removed);
+        }
+        _ => {}
+    }
+}
+
+group.merge_staged_commit(provider, staged_commit)?;
+```
+
+## State transitions
+
+After merging a `StagedCommit`:
+
+- The group advances to the new epoch
+- Pending proposals are cleared
+- Message secrets are rotated
+- If `self_removed()` is `true`, the group becomes inactive
+- Any pending commit is cleared

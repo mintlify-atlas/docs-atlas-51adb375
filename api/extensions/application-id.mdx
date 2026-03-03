@@ -1,0 +1,193 @@
+---
+title: ApplicationIdExtension
+description: Application-defined identifier for LeafNodes
+---
+
+The `ApplicationIdExtension` allows applications to add an explicit, application-defined identifier to a LeafNode. This extension is valid in LeafNode contexts only.
+
+## Overview
+
+Applications can use this extension to associate custom identifiers with LeafNodes, enabling application-specific lookups and associations beyond the MLS protocol's built-in identification mechanisms.
+
+## Structure
+
+The extension contains a variable-length byte array:
+
+```rust
+pub struct ApplicationIdExtension {
+    key_id: VLBytes,
+}
+```
+
+## Creating an Application ID
+
+```rust
+use openmls::prelude::*;
+
+let app_id = ApplicationIdExtension::new(b"user-12345");
+```
+
+## Methods
+
+### new()
+
+Creates a new ApplicationIdExtension from a byte slice.
+
+```rust
+pub fn new(id: &[u8]) -> Self
+```
+
+<ParamField path="id" type="&[u8]" required>
+  The application-defined identifier as a byte slice
+</ParamField>
+
+<ResponseField name="return" type="ApplicationIdExtension">
+  New ApplicationIdExtension instance
+</ResponseField>
+
+### as_slice()
+
+Returns the application ID as a byte slice.
+
+```rust
+pub fn as_slice(&self) -> &[u8]
+```
+
+<ResponseField name="return" type="&[u8]">
+  The application ID as a byte slice
+</ResponseField>
+
+## Usage in LeafNode
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+
+// Create application ID extension
+let app_id_ext = Extension::ApplicationId(
+    ApplicationIdExtension::new(b"user-alice-123")
+);
+
+// Add to leaf node extensions
+let mut extensions = Extensions::<LeafNode>::empty();
+extensions.add(app_id_ext)?;
+
+// Use when creating leaf node parameters
+let leaf_params = LeafNodeParameters::builder()
+    .with_extensions(extensions)
+    .build();
+```
+
+## Accessing the Application ID
+
+```rust
+// From extensions
+if let Some(app_id) = extensions.application_id() {
+    println!("Application ID: {:?}", 
+             String::from_utf8_lossy(app_id.as_slice()));
+}
+
+// From a specific extension
+let extension = Extension::ApplicationId(
+    ApplicationIdExtension::new(b"test")
+);
+
+if let Ok(app_id_ext) = extension.as_application_id_extension() {
+    let id_bytes = app_id_ext.as_slice();
+}
+```
+
+## Example: User Identification
+
+```rust
+use openmls::prelude::*;
+use openmls::extensions::*;
+
+// Create application ID from user database ID
+let user_db_id = "550e8400-e29b-41d4-a716-446655440000";
+let app_id = ApplicationIdExtension::new(user_db_id.as_bytes());
+
+// Add to leaf node
+let extension = Extension::ApplicationId(app_id);
+let mut extensions = Extensions::<LeafNode>::empty();
+extensions.add(extension)?;
+
+// Later, retrieve the ID
+if let Some(app_id) = leaf_node.extensions().application_id() {
+    let user_id = String::from_utf8_lossy(app_id.as_slice());
+    // Look up user in database using user_id
+}
+```
+
+## Example: Device Identification
+
+```rust
+use openmls::prelude::*;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+struct DeviceInfo {
+    device_id: String,
+    device_type: String,
+    platform: String,
+}
+
+let device_info = DeviceInfo {
+    device_id: "device-789".to_string(),
+    device_type: "mobile".to_string(),
+    platform: "iOS".to_string(),
+};
+
+// Serialize device info
+let device_bytes = serde_json::to_vec(&device_info)?;
+
+// Create application ID extension
+let app_id = ApplicationIdExtension::new(&device_bytes);
+let extension = Extension::ApplicationId(app_id);
+```
+
+## Context Validation
+
+The ApplicationIdExtension is only valid in LeafNode contexts:
+
+```rust
+// Valid
+let mut leaf_extensions = Extensions::<LeafNode>::empty();
+leaf_extensions.add(Extension::ApplicationId(app_id))?; // OK
+
+// Invalid - will return an error
+let mut group_extensions = Extensions::<GroupContext>::empty();
+group_extensions.add(Extension::ApplicationId(app_id))?; // Error!
+```
+
+## Wire Format
+
+The extension is serialized using TLS encoding:
+
+```c
+struct {
+    opaque key_id<V>;
+} ApplicationIdExtension;
+```
+
+## Use Cases
+
+1. **User Mapping**: Map MLS members to application user IDs
+2. **Device Tracking**: Associate devices with specific identifiers
+3. **Session Management**: Link MLS sessions to application sessions
+4. **Multi-tenancy**: Identify tenant or organization associations
+5. **Audit Logging**: Track actions by application-specific identifiers
+
+## Best Practices
+
+1. **Uniqueness**: Ensure application IDs are unique within your application scope
+2. **Privacy**: Be mindful of what information you include in the ID
+3. **Length**: Keep IDs reasonably short to minimize overhead
+4. **Encoding**: Use consistent encoding (UTF-8, JSON, etc.) across your application
+5. **Validation**: Validate application IDs when processing received messages
+
+## See Also
+
+- [Extensions Overview](/api/extensions/overview)
+- [LeafNode](/api/tree/leaf-node)
+- [LeafNode Extensions](https://www.rfc-editor.org/rfc/rfc9420.html#section-7.2)

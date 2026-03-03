@@ -1,0 +1,577 @@
+---
+title: Contributing to OpenMLS
+description: Guidelines for contributing to the OpenMLS project
+---
+
+# Contributing to OpenMLS
+
+Thank you for your interest in contributing to OpenMLS! This guide will help you get started with contributing to the project.
+
+## Code of Conduct
+
+Before contributing, please read our [Code of Conduct](https://github.com/openmls/openmls/blob/main/CODE_OF_CONDUCT.md). We are committed to providing a welcoming and inclusive environment for all contributors.
+
+## Getting Started
+
+### Setting Up Your Environment
+
+1. **Fork and clone the repository:**
+
+```bash
+git clone https://github.com/YOUR_USERNAME/openmls.git
+cd openmls
+```
+
+2. **Install Rust:**
+
+OpenMLS requires a recent version of Rust. Install via [rustup](https://rustup.rs/):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+3. **Build the project:**
+
+```bash
+cargo build
+```
+
+4. **Run tests:**
+
+```bash
+cargo test
+```
+
+### Working with Dependencies
+
+If you need to work on a dependency (e.g., [hpke-rs](https://crates.io/crates/hpke-rs)) alongside OpenMLS:
+
+**For local development:**
+
+Add a patch to `Cargo.toml`:
+
+```toml
+[patch.crates-io.hpke-rs]
+path = "../hpke-rs" # local path to the project
+```
+
+**For submitting PRs:**
+
+Point to a remote branch so CI can build:
+
+```toml
+[patch.crates-io.hpke-rs]
+git = "https://github.com/my-fork/hpke-rs"
+branch = "fix/123"
+package = "hpke-rs"
+```
+
+---
+
+## Working with Issues
+
+### Finding an Issue
+
+1. Browse [open issues](https://github.com/openmls/openmls/issues)
+2. Look for issues labeled `good first issue` or `help wanted`
+3. Check the priority labels:
+
+| Label | Description |
+|-------|-------------|
+| P1 | Must be addressed ASAP |
+| P2 | Pick up next |
+| P3 | Low-priority item |
+| P4 | Won't fix unless someone contributes |
+
+### Working on an Issue
+
+1. **Assign yourself** to the issue so others know it's being worked on
+2. **Create a branch** from `main`:
+
+```bash
+git checkout -b fix/issue-123
+```
+
+3. **Link your PR** to the issue when you create it
+4. If you stop working on an issue, **unassign yourself** and leave a comment explaining why
+
+---
+
+## Pull Request Process
+
+### PR Guidelines
+
+<Note>
+  Pull requests should not exceed 1000 lines. If an issue requires more work, split it into multiple PRs.
+</Note>
+
+**Before submitting:**
+
+1. Verify all [status checks](https://help.github.com/articles/about-status-checks/) pass
+2. Follow the [PR template](#pr-template) below
+3. Run `rustfmt` on all code:
+
+```bash
+cargo fmt --all
+```
+
+4. Ensure tests pass:
+
+```bash
+cargo test --all-features
+```
+
+### Commit Guidelines
+
+**Commit message format:**
+
+- Use the **present tense** ("Add feature" not "Added feature")
+- Use the **imperative mood** ("Move cursor to..." not "Moves cursor to...")
+- Limit the first line to **80 characters**
+- Reference issues and pull requests after the first line
+- For non-trivial patches, include important details in the commit body
+
+**Example:**
+
+```
+Add support for GREASE in capabilities
+
+Implements RFC 9420 Section 13.5 GREASE support:
+- Add Grease(u16) variants to ProposalType, ExtensionType, CredentialType
+- Add is_grease() methods to all GREASE-capable types
+- Add with_grease() convenience methods to Capabilities
+
+Fixes #1900
+```
+
+### PR Best Practices
+
+**Separate concerns:**
+
+- Split mass-changes or mechanical changes into separate PRs
+- Separate commits into conceptually-separate pieces for review
+- Address all comments from previous reviews before requesting another
+
+**Changesets:**
+
+```bash
+# Good: focused changes
+git commit -m "Add GREASE support to ProposalType"
+git commit -m "Add GREASE support to ExtensionType"
+git commit -m "Add documentation for GREASE"
+
+# Less ideal: mixed concerns
+git commit -m "Add GREASE and fix unrelated bug"
+```
+
+---
+
+## PR Template
+
+Your pull request should include:
+
+### 1. Issue Link
+
+- Link to the open issue
+- Assign yourself to both the issue and PR
+
+### 2. Design Description
+
+Explain the design so reviewers can understand your approach:
+
+```markdown
+## Summary
+
+This PR implements GREASE support as defined in RFC 9420 Section 13.5.
+
+## Design
+
+Adds `Grease(u16)` variants to enums that support GREASE values:
+- ProposalType
+- ExtensionType  
+- CredentialType
+
+GREASE values are automatically recognized during deserialization
+and filtered during validation.
+```
+
+### 3. Alternatives Considered
+
+```markdown
+## Alternatives
+
+1. **Store GREASE as Unknown variants**: Rejected because RFC requires
+   specific GREASE range (0x0A0A, 0x1A1A, etc.)
+2. **Add at serialization time only**: Rejected because validation
+   needs to recognize GREASE values
+```
+
+### 4. Side Effects and Impacts
+
+```markdown
+## Potential Issues
+
+- Breaking change: enum variants added to public enums
+- Applications matching on these enums need to add new variants
+- Migration guide provided in CHANGELOG
+```
+
+### 5. Testing and Verification
+
+```markdown
+## Testing
+
+- Added unit tests for is_grease() methods
+- Added integration tests for GREASE in capabilities
+- Verified with RFC 9420 test vectors
+- Tested serialization roundtrips
+```
+
+### 6. User-Facing Changes
+
+```markdown
+## Changelog Entry
+
+Added GREASE support for ProposalType, ExtensionType, and CredentialType
+as defined in RFC 9420 Section 13.5. Use `with_grease()` methods to add
+random GREASE values to capabilities.
+```
+
+---
+
+## Code Style Guidelines
+
+### Rust Style
+
+**Use `rustfmt` for all code:**
+
+```bash
+cargo fmt --all
+```
+
+The CI will check that your code adheres to `rustfmt` style.
+
+**Additional conventions:**
+
+- Use descriptive variable names
+- Prefer explicit types over type inference in public APIs
+- Use `Result` for operations that can fail
+- Avoid unwrap/expect in library code
+
+```rust
+// Good
+pub fn create_group(
+    provider: &impl OpenMlsProvider,
+    config: &MlsGroupConfig,
+) -> Result<MlsGroup, CreateGroupError> {
+    // ...
+}
+
+// Avoid
+pub fn create_group(provider: &impl OpenMlsProvider, config: &MlsGroupConfig) -> MlsGroup {
+    // ... .unwrap() ...
+}
+```
+
+### Documentation Style
+
+Use [rustdoc](https://doc.rust-lang.org/rustdoc/index.html) for all documentation:
+
+**Required:**
+- All public functions must have doc comments
+- Include examples for non-trivial functions
+- Document all public types and traits
+
+**Encouraged:**
+- Internal functions should have doc comments
+- Explain complex algorithms
+- Link to relevant RFC sections
+
+**Example:**
+
+```rust
+/// Creates a new MLS group with the given configuration.
+///
+/// This function initializes a new group with a single member (the creator)
+/// and generates the initial key material.
+///
+/// # Arguments
+///
+/// * `provider` - The crypto and storage provider
+/// * `signer` - The signature keypair for the creator
+/// * `config` - Group configuration parameters
+/// * `credential_with_key` - The creator's credential and public key
+///
+/// # Returns
+///
+/// Returns the newly created `MlsGroup`.
+///
+/// # Errors
+///
+/// Returns `CreateGroupError` if:
+/// - A group with the same ID already exists in storage
+/// - Cryptographic operations fail
+/// - Storage operations fail
+///
+/// # Example
+///
+/// ```
+/// use openmls::prelude::*;
+///
+/// let group = MlsGroup::new(
+///     &provider,
+///     &signer,
+///     &config,
+///     credential_with_key,
+/// )?;
+/// ```
+pub fn new(
+    provider: &impl OpenMlsProvider,
+    signer: &impl Signer,
+    config: &MlsGroupConfig,
+    credential_with_key: CredentialWithKey,
+) -> Result<Self, CreateGroupError> {
+    // implementation
+}
+```
+
+---
+
+## Review Process
+
+### As a Reviewer
+
+**Core principles:**
+
+- Reviewing code is more valuable than writing code
+- Respond within **one working day**:
+  - Provide a review, OR
+  - Give a deadline for when you'll review, OR
+  - Politely decline and suggest another reviewer
+- Communicate priority if you can't review promptly
+
+### Review Checklist
+
+**Administrative checks:**
+- [ ] Issue is assigned and linked
+- [ ] Commit title and message are clear
+- [ ] PR applies cleanly to target branch
+- [ ] New files have proper license headers
+
+**Testing:**
+- [ ] Run automated tests locally
+- [ ] Manually verify changes if applicable
+- [ ] Check test coverage for new code
+
+**Code review:**
+- [ ] Does the change address the issue?
+- [ ] Is the code well-documented?
+- [ ] Do you understand all code changes?
+  - If not, request clarification
+- [ ] Is the public API changed?
+  - Are changes documented for consumers?
+  - Does it break backwards compatibility?
+  - Is the new API sensible and necessary?
+- [ ] Is the code maintainable?
+- [ ] Are there security implications?
+- [ ] Is performance affected?
+- [ ] For follow-up reviews, check the interdiff
+
+**Request clarification when needed** - it's better to ask than approve code you don't understand.
+
+---
+
+## Release Process
+
+OpenMLS follows [semantic versioning](https://semver.org/) and the Rust versioning guidelines.
+
+### Versioning
+
+- **Major version** (1.0.0): Breaking changes
+- **Minor version** (0.1.0): New features, backwards compatible
+- **Patch version** (0.0.1): Bug fixes, backwards compatible
+
+### Pre-releases
+
+Before releasing a minor or major version:
+
+1. Publish a pre-release to crates.io (e.g., `0.8.0-rc.1`)
+2. Wait at least **one week** for community feedback
+3. Fix any issues found
+4. Release final version
+
+### Release Checklist
+
+See [release_management.md](https://github.com/openmls/openmls/blob/main/book/src/release_management.md) for the complete checklist.
+
+**Key steps:**
+
+- [ ] Update CHANGELOG.md for each crate
+- [ ] Create git tags (e.g., `openmls/v0.8.0`)
+- [ ] Publish release notes on GitHub
+- [ ] Publish crates in order:
+  1. openmls_traits
+  2. openmls_memory_storage
+  3. openmls_rust_crypto
+  4. openmls
+
+---
+
+## Crates in this Repository
+
+The OpenMLS repository contains multiple crates:
+
+| Crate | Description |
+|-------|-------------|
+| `openmls` | Main library implementing MLS protocol |
+| `openmls_traits` | Trait definitions for providers |
+| `openmls_rust_crypto` | RustCrypto-based provider |
+| `openmls_libcrux_crypto` | Libcrux-based provider |
+| `openmls_memory_storage` | In-memory storage provider |
+| `openmls_sqlite_storage` | SQLite storage provider |
+
+**Publishing order matters** - traits must be published before implementations.
+
+---
+
+## Testing Guidelines
+
+### Running Tests
+
+```bash
+# All tests
+cargo test --all-features
+
+# Specific crate
+cargo test -p openmls
+
+# Specific test
+cargo test test_name
+
+# With logging
+RUST_LOG=debug cargo test
+```
+
+### Writing Tests
+
+**Unit tests:**
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grease_detection() {
+        let grease = ProposalType::Grease(0x0A0A);
+        assert!(grease.is_grease());
+        
+        let normal = ProposalType::Add;
+        assert!(!normal.is_grease());
+    }
+}
+```
+
+**Integration tests:**
+
+```rust
+// tests/integration_test.rs
+use openmls::prelude::*;
+
+#[test]
+fn test_group_creation() {
+    let provider = OpenMlsRustCrypto::default();
+    // ... test group operations
+}
+```
+
+**Property-based tests** are welcome using [proptest](https://github.com/proptest-rs/proptest).
+
+---
+
+## Communication
+
+### Getting Help
+
+- **Questions**: [GitHub Discussions](https://github.com/openmls/openmls/discussions)
+- **Bugs**: [GitHub Issues](https://github.com/openmls/openmls/issues)
+- **Security**: See [SECURITY.md](https://github.com/openmls/openmls/blob/main/SECURITY.md)
+
+### Proposing Features
+
+1. Open an issue describing the feature
+2. Discuss the design with maintainers
+3. Get approval before starting large PRs
+4. Create a PR implementing the feature
+
+### Reporting Bugs
+
+**Include:**
+
+- OpenMLS version
+- Rust version
+- Platform (OS, architecture)
+- Minimal code to reproduce
+- Expected vs actual behavior
+- Full error messages
+
+**Example:**
+
+```markdown
+## Bug Report
+
+**Environment:**
+- OpenMLS version: 0.8.0
+- Rust version: 1.75.0
+- Platform: Linux x86_64
+
+**Description:**
+Processing a commit fails with InvalidSignature error.
+
+**Reproduction:**
+```rust
+let group = MlsGroup::new(/* ... */);
+let result = group.process_message(&provider, commit);
+// Error: InvalidSignature
+```
+
+**Expected:** Commit should be processed successfully
+**Actual:** Returns InvalidSignature error
+
+**Error message:**
+```
+ValidationError::InvalidSignature
+```
+```
+
+---
+
+## License
+
+By contributing to OpenMLS, you agree that your contributions will be licensed under the MIT License.
+
+All new files must include the license header:
+
+```rust
+// Copyright (c) 2024 OpenMLS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// ...
+```
+
+---
+
+## Recognition
+
+Contributors are recognized in:
+
+- GitHub contributors page
+- Release notes for their contributions
+- The community!
+
+Thank you for contributing to OpenMLS and helping improve secure group messaging for everyone!

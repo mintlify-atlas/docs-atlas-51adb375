@@ -1,0 +1,380 @@
+---
+title: 'Additional Authenticated Data'
+description: 'Include authenticated but unencrypted data in MLS messages'
+icon: 'certificate'
+---
+
+Additional Authenticated Data (AAD) is a byte sequence that can be included in both private and public MLS messages. It is always authenticated (signed) but never encrypted, making it suitable for metadata that must remain inspectable during transit.
+
+## Overview
+
+AAD provides a mechanism to:
+
+- Include authenticated metadata with messages
+- Attach routing or delivery information
+- Add application-specific context
+- Provide audit trail data
+
+<Note>
+AAD is **authenticated** (cannot be modified) but **not encrypted** (visible to intermediaries). Never put sensitive information in AAD.
+</Note>
+
+## Setting AAD
+
+Set AAD on a group before creating a message:
+
+```rust
+use openmls::prelude::*;
+
+// Set AAD on the group
+alice_group.set_aad(b"Additional Authenticated Data".to_vec());
+
+// Verify AAD is set
+assert_eq!(alice_group.aad(), b"Additional Authenticated Data");
+```
+
+The AAD will be included in the next outgoing message and then automatically cleared.
+
+## AAD lifecycle
+
+AAD has a specific lifecycle:
+
+<Steps>
+  <Step title="Set AAD">
+    Call `set_aad()` with your data.
+  </Step>
+  
+  <Step title="Create message">
+    Create an application message or commit. AAD is included automatically.
+  </Step>
+  
+  <Step title="AAD cleared">
+    AAD is automatically cleared after successful message creation.
+  </Step>
+</Steps>
+
+```rust
+// Set AAD
+alice_group.set_aad(b"Metadata 1".to_vec());
+
+// Create message - AAD is included
+let message1 = alice_group
+    .create_message(&provider, &signer, b"Hello")
+    .expect("Error creating message");
+
+// AAD is now cleared
+assert_eq!(alice_group.aad(), b"");
+
+// Next message has no AAD unless set again
+let message2 = alice_group
+    .create_message(&provider, &signer, b"World")
+    .expect("Error creating message");
+```
+
+<Warning>
+AAD persists only until the next successful message creation. If you need AAD on multiple messages, set it before each message.
+</Warning>
+
+## Using AAD with application messages
+
+Include AAD in regular application messages:
+
+```rust
+use openmls::prelude::*;
+
+// Set AAD before creating the message
+alice_group.set_aad(b"Message metadata".to_vec());
+
+let message = alice_group
+    .create_message(&provider, &signer, b"Hello, Bob!")
+    .expect("Error creating application message");
+
+// AAD is now cleared
+assert_eq!(alice_group.aad(), b"");
+```
+
+## Using AAD with commits
+
+AAD can also be included in commits:
+
+```rust
+// Set AAD before creating a commit
+alice_group.set_aad(b"Commit metadata".to_vec());
+
+// Create commit with AAD
+let (commit, welcome, group_info) = alice_group
+    .add_members(&provider, &signer, &[bob_key_package])
+    .expect("Could not add members");
+
+// AAD is cleared after successful commit creation
+assert_eq!(alice_group.aad(), b"");
+```
+
+## Inspecting received AAD
+
+Receivers can access AAD from processed messages:
+
+```rust
+use openmls::prelude::*;
+
+// Process incoming message
+let protocol_message: ProtocolMessage = mls_message
+    .try_into_protocol_message()
+    .expect("Expected a ProtocolMessage");
+
+let processed_message = bob_group
+    .process_message(&provider, protocol_message)
+    .expect("Could not process message");
+
+// Access AAD from processed message
+assert_eq!(processed_message.aad(), b"Additional Authenticated Data");
+
+// AAD is available regardless of message content type
+match processed_message.into_content() {
+    ProcessedMessageContent::ApplicationMessage(app_msg) => {
+        println!("Application message with AAD: {:?}", processed_message.aad());
+    }
+    ProcessedMessageContent::StagedCommitMessage(commit) => {
+        println!("Commit with AAD: {:?}", processed_message.aad());
+    }
+    _ => {}
+}
+```
+
+## Common use cases
+
+<AccordionGroup>
+  <Accordion title="Message routing" icon="route">
+    Include delivery routing information:
+    
+    ```rust
+    // Serialize routing info
+    let routing_info = serde_json::to_vec(&RoutingInfo {
+        destination: "room-123",
+        priority: "high",
+    }).unwrap();
+    
+    alice_group.set_aad(routing_info);
+    let message = alice_group.create_message(&provider, &signer, content).unwrap();
+    
+    // Delivery service can inspect AAD for routing
+    // without decrypting the message
+    ```
+  </Accordion>
+  
+  <Accordion title="Message correlation" icon="link">
+    Link messages together:
+    
+    ```rust
+    // Include correlation ID
+    let correlation_id = format!("thread-{}", thread_id);
+    alice_group.set_aad(correlation_id.as_bytes().to_vec());
+    
+    let message = alice_group.create_message(&provider, &signer, content).unwrap();
+    
+    // Receivers can correlate messages by AAD
+    if processed_message.aad() == correlation_id.as_bytes() {
+        // Part of same conversation thread
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Audit trail" icon="clipboard-list">
+    Include audit information:
+    
+    ```rust
+    // Add audit metadata
+    let audit_data = serde_json::to_vec(&AuditInfo {
+        timestamp: current_time(),
+        client_version: "1.2.3",
+        client_id: device_id,
+    }).unwrap();
+    
+    alice_group.set_aad(audit_data);
+    let message = alice_group.create_message(&provider, &signer, content).unwrap();
+    
+    // Audit system can log AAD without accessing message content
+    ```
+  </Accordion>
+  
+  <Accordion title="Delivery confirmation" icon="check-double">
+    Include message identifiers for acknowledgment:
+    
+    ```rust
+    // Set message ID in AAD
+    let message_id = generate_unique_id();
+    alice_group.set_aad(message_id.as_bytes().to_vec());
+    
+    let message = alice_group.create_message(&provider, &signer, content).unwrap();
+    
+    // Receiver can acknowledge using AAD
+    send_acknowledgment(processed_message.aad());
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Security considerations
+
+<Warning>
+AAD is authenticated but not encrypted. Important security implications:
+
+- **No confidentiality** - AAD is visible to anyone who can see the message
+- **No forward secrecy** - AAD remains visible even if keys are compromised
+- **Network exposure** - Intermediaries and delivery services can read AAD
+</Warning>
+
+### What to include in AAD
+
+✅ **Safe for AAD:**
+- Message IDs and correlation tokens
+- Routing and delivery information
+- Public timestamps
+- Client version information
+- Non-sensitive metadata
+
+❌ **Never put in AAD:**
+- User identities or personal information
+- Session tokens or credentials
+- Sensitive metadata
+- Any confidential data
+
+### Authentication guarantees
+
+AAD is cryptographically authenticated:
+
+```rust
+// AAD cannot be modified in transit
+// Tampering will cause signature verification to fail
+
+let result = bob_group.process_message(&provider, modified_message);
+assert!(result.is_err()); // Signature verification fails if AAD was modified
+```
+
+## AAD size considerations
+
+AAD increases message size:
+
+```rust
+// Small AAD
+alice_group.set_aad(b"small".to_vec()); // 5 bytes
+
+// Large AAD increases message size proportionally
+let large_aad = vec![0u8; 1024]; // 1KB
+alice_group.set_aad(large_aad);
+
+// Consider message size limits when using large AAD
+```
+
+<Tip>
+Keep AAD small and focused. Use external storage for large metadata and include only references in AAD.
+</Tip>
+
+## Working with AAD in commit builder
+
+When using the commit builder API, set AAD on the group before building:
+
+```rust
+use openmls::prelude::*;
+
+// Set AAD before building commit
+alice_group.set_aad(b"Commit metadata".to_vec());
+
+// Build commit - AAD is automatically included
+let message_bundle = alice_group
+    .commit_builder()
+    .propose_adds(vec![bob_key_package])
+    .load_psks(provider.storage())
+    .unwrap()
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)
+    .unwrap()
+    .stage_commit(&provider)
+    .unwrap();
+
+// AAD is cleared after successful commit creation
+assert_eq!(alice_group.aad(), b"");
+```
+
+## Serialization format
+
+AAD is included in the MLS message structure as defined in RFC 9420:
+
+```
+struct {
+    opaque content<V>;
+    opaque signature<V>;
+    optional<MAC> confirmation_tag;
+} AuthenticatedContent;
+
+struct {
+    opaque group_id<V>;
+    uint64 epoch;
+    Sender sender;
+    opaque authenticated_data<V>;  // ← AAD goes here
+    ContentType content_type;
+    FramedContent content;
+} FramedContent;
+```
+
+The `authenticated_data` field contains the AAD and is covered by the signature.
+
+## Best practices
+
+- **Minimize AAD size** - Keep it small to reduce message overhead
+- **No sensitive data** - Remember AAD is not encrypted
+- **Document format** - Clearly specify AAD format for your application
+- **Version AAD** - Include version markers if AAD format may evolve
+- **Validate AAD** - Verify AAD contents meet application requirements
+
+## Example: Complete flow
+
+Here's a complete example showing AAD usage:
+
+```rust
+use openmls::prelude::*;
+
+// Sender: Alice sets AAD and sends message
+alice_group.set_aad(b"routing:room-123,priority:high".to_vec());
+
+let message = alice_group
+    .create_message(&provider, &alice_signer, b"Hello, everyone!")
+    .expect("Error creating message");
+
+// Verify AAD was cleared
+assert_eq!(alice_group.aad(), b"");
+
+// Serialize and send
+let message_bytes = message.to_bytes().unwrap();
+send_to_delivery_service(message_bytes);
+
+// Delivery service can inspect AAD for routing
+let mls_message = MlsMessageIn::tls_deserialize_exact(message_bytes).unwrap();
+// (AAD accessible in message structure for routing)
+
+// Receiver: Bob processes message and reads AAD
+let protocol_message = mls_message.try_into_protocol_message().unwrap();
+let processed_message = bob_group
+    .process_message(&provider, protocol_message)
+    .expect("Could not process message");
+
+// Access AAD
+let aad = processed_message.aad();
+assert_eq!(aad, b"routing:room-123,priority:high");
+
+// Parse AAD for application logic
+let aad_str = String::from_utf8(aad.to_vec()).unwrap();
+if aad_str.contains("priority:high") {
+    // Handle high priority message
+}
+
+// Access message content
+if let ProcessedMessageContent::ApplicationMessage(app_msg) = processed_message.into_content() {
+    assert_eq!(app_msg.into_bytes(), b"Hello, everyone!");
+}
+```
+
+## Related
+
+- [Application Messages](/user-manual/sending-messages) - Creating and sending messages
+- [Commits](/api/messages/commits) - Using AAD with commits
+- [RFC 9420 Section 6.1](https://www.rfc-editor.org/rfc/rfc9420.html#section-6.1) - FramedContent structure
+- Source: `set_aad()` in `/workspace/source/openmls/tests/book_code.rs:390-418`

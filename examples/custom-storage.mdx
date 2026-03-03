@@ -1,0 +1,695 @@
+---
+title: "Custom Storage Provider"
+description: "Implement custom storage backends for persisting OpenMLS state"
+---
+
+OpenMLS requires a storage provider to persist group state, key packages, and cryptographic key material. This example shows how to implement custom storage backends for databases, cloud storage, or encrypted file systems.
+
+## Overview
+
+You'll learn to:
+- Implement the `StorageProvider` trait
+- Store and retrieve OpenMLS entities
+- Handle serialization and encryption
+- Integrate with databases and cloud storage
+
+<Steps>
+
+### Understand the storage trait
+
+The `StorageProvider` trait defines storage operations:
+
+```rust
+use openmls_traits::storage::{
+    StorageProvider, Entity, Key, CURRENT_VERSION,
+};
+
+pub trait StorageProvider<const VERSION: u16> {
+    type Error: std::error::Error;
+
+    /// Store a value
+    fn write<V: Entity<VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error>;
+
+    /// Append a value to a list
+    fn append<V: Entity<VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error>;
+
+    /// Read a value
+    fn read<V: Entity<VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Option<V>, Self::Error>;
+
+    /// Read all values for a key
+    fn read_list<V: Entity<VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Vec<V>, Self::Error>;
+
+    /// Delete a value
+    fn delete<V: Entity<VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<(), Self::Error>;
+}
+```
+
+### Create a file-based storage provider
+
+Implement a simple file-based storage backend:
+
+```rust
+use openmls_traits::storage::*;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
+
+#[derive(Debug, Clone)]
+pub struct FileStorage {
+    base_path: PathBuf,
+    cache: Arc<RwLock<HashMap<Vec<u8>, Vec<u8>>>>,
+}
+
+#[derive(Debug)]
+pub enum FileStorageError {
+    IoError(std::io::Error),
+    SerializationError(String),
+}
+
+impl std::fmt::Display for FileStorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::IoError(e) => write!(f, "IO error: {}", e),
+            Self::SerializationError(e) => write!(f, "Serialization error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for FileStorageError {}
+
+impl FileStorage {
+    pub fn new(base_path: PathBuf) -> Result<Self, FileStorageError> {
+        fs::create_dir_all(&base_path)
+            .map_err(FileStorageError::IoError)?;
+
+        Ok(Self {
+            base_path,
+            cache: Arc::new(RwLock::new(HashMap::new())),
+        })
+    }
+
+    fn key_to_path<V: Entity<CURRENT_VERSION>>(&self, key: &Key<V>) -> PathBuf {
+        let key_bytes = key.as_slice();
+        let key_hex = hex::encode(key_bytes);
+        self.base_path.join(format!("{}.bin", key_hex))
+    }
+
+    fn write_to_file(&self, path: &PathBuf, data: &[u8]) -> Result<(), FileStorageError> {
+        let mut file = File::create(path)
+            .map_err(FileStorageError::IoError)?;
+        file.write_all(data)
+            .map_err(FileStorageError::IoError)?;
+        Ok(())
+    }
+
+    fn read_from_file(&self, path: &PathBuf) -> Result<Vec<u8>, FileStorageError> {
+        let mut file = File::open(path)
+            .map_err(FileStorageError::IoError)?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .map_err(FileStorageError::IoError)?;
+        Ok(data)
+    }
+}
+
+impl StorageProvider<CURRENT_VERSION> for FileStorage {
+    type Error = FileStorageError;
+
+    fn write<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        let serialized = serde_json::to_vec(v)
+            .map_err(|e| FileStorageError::SerializationError(e.to_string()))?;
+
+        // Update cache
+        self.cache.write().unwrap()
+            .insert(k.as_slice().to_vec(), serialized.clone());
+
+        // Write to disk
+        let path = self.key_to_path(k);
+        self.write_to_file(&path, &serialized)?;
+
+        Ok(())
+    }
+
+    fn append<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        let path = self.key_to_path(k);
+        let mut list: Vec<V> = if path.exists() {
+            let data = self.read_from_file(&path)?;
+            serde_json::from_slice(&data)
+                .map_err(|e| FileStorageError::SerializationError(e.to_string()))?
+        } else {
+            Vec::new()
+        };
+
+        list.push(v.clone());
+        let serialized = serde_json::to_vec(&list)
+            .map_err(|e| FileStorageError::SerializationError(e.to_string()))?;
+
+        self.write_to_file(&path, &serialized)?;
+        Ok(())
+    }
+
+    fn read<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Option<V>, Self::Error> {
+        // Try cache first
+        if let Some(data) = self.cache.read().unwrap().get(k.as_slice()) {
+            let value = serde_json::from_slice(data)
+                .map_err(|e| FileStorageError::SerializationError(e.to_string()))?;
+            return Ok(Some(value));
+        }
+
+        // Try disk
+        let path = self.key_to_path(k);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let data = self.read_from_file(&path)?;
+        let value = serde_json::from_slice(&data)
+            .map_err(|e| FileStorageError::SerializationError(e.to_string()))?;
+
+        // Update cache
+        self.cache.write().unwrap()
+            .insert(k.as_slice().to_vec(), data);
+
+        Ok(Some(value))
+    }
+
+    fn read_list<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Vec<V>, Self::Error> {
+        let path = self.key_to_path(k);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let data = self.read_from_file(&path)?;
+        let list = serde_json::from_slice(&data)
+            .map_err(|e| FileStorageError::SerializationError(e.to_string()))?;
+
+        Ok(list)
+    }
+
+    fn delete<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<(), Self::Error> {
+        // Remove from cache
+        self.cache.write().unwrap().remove(k.as_slice());
+
+        // Remove from disk
+        let path = self.key_to_path(k);
+        if path.exists() {
+            fs::remove_file(path)
+                .map_err(FileStorageError::IoError)?;
+        }
+
+        Ok(())
+    }
+}
+```
+
+### Create a database storage provider
+
+Implement a SQL database backend:
+
+```rust
+use rusqlite::{Connection, params};
+use std::sync::{Arc, Mutex};
+
+pub struct SqliteStorage {
+    conn: Arc<Mutex<Connection>>,
+}
+
+#[derive(Debug)]
+pub enum SqliteError {
+    DatabaseError(rusqlite::Error),
+    SerializationError(String),
+}
+
+impl std::fmt::Display for SqliteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::DatabaseError(e) => write!(f, "Database error: {}", e),
+            Self::SerializationError(e) => write!(f, "Serialization error: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for SqliteError {}
+
+impl SqliteStorage {
+    pub fn new(db_path: &str) -> Result<Self, SqliteError> {
+        let conn = Connection::open(db_path)
+            .map_err(SqliteError::DatabaseError)?;
+
+        // Create tables
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS openmls_storage (
+                key BLOB PRIMARY KEY,
+                value BLOB NOT NULL,
+                is_list INTEGER NOT NULL DEFAULT 0
+            )",
+            [],
+        )
+        .map_err(SqliteError::DatabaseError)?;
+
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+}
+
+impl StorageProvider<CURRENT_VERSION> for SqliteStorage {
+    type Error = SqliteError;
+
+    fn write<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        let serialized = serde_json::to_vec(v)
+            .map_err(|e| SqliteError::SerializationError(e.to_string()))?;
+
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO openmls_storage (key, value, is_list) VALUES (?1, ?2, 0)",
+            params![k.as_slice(), serialized],
+        )
+        .map_err(SqliteError::DatabaseError)?;
+
+        Ok(())
+    }
+
+    fn append<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        let conn = self.conn.lock().unwrap();
+        
+        // Read existing list
+        let mut list: Vec<V> = conn
+            .query_row(
+                "SELECT value FROM openmls_storage WHERE key = ?1 AND is_list = 1",
+                params![k.as_slice()],
+                |row| {
+                    let data: Vec<u8> = row.get(0)?;
+                    Ok(data)
+                },
+            )
+            .optional()
+            .map_err(SqliteError::DatabaseError)?
+            .map(|data| {
+                serde_json::from_slice(&data)
+                    .map_err(|e| SqliteError::SerializationError(e.to_string()))
+            })
+            .transpose()?
+            .unwrap_or_else(Vec::new);
+
+        list.push(v.clone());
+        let serialized = serde_json::to_vec(&list)
+            .map_err(|e| SqliteError::SerializationError(e.to_string()))?;
+
+        conn.execute(
+            "INSERT OR REPLACE INTO openmls_storage (key, value, is_list) VALUES (?1, ?2, 1)",
+            params![k.as_slice(), serialized],
+        )
+        .map_err(SqliteError::DatabaseError)?;
+
+        Ok(())
+    }
+
+    fn read<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Option<V>, Self::Error> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT value FROM openmls_storage WHERE key = ?1 AND is_list = 0",
+                params![k.as_slice()],
+                |row| {
+                    let data: Vec<u8> = row.get(0)?;
+                    Ok(data)
+                },
+            )
+            .optional()
+            .map_err(SqliteError::DatabaseError)?;
+
+        match result {
+            Some(data) => {
+                let value = serde_json::from_slice(&data)
+                    .map_err(|e| SqliteError::SerializationError(e.to_string()))?;
+                Ok(Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn read_list<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Vec<V>, Self::Error> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn
+            .query_row(
+                "SELECT value FROM openmls_storage WHERE key = ?1 AND is_list = 1",
+                params![k.as_slice()],
+                |row| {
+                    let data: Vec<u8> = row.get(0)?;
+                    Ok(data)
+                },
+            )
+            .optional()
+            .map_err(SqliteError::DatabaseError)?;
+
+        match result {
+            Some(data) => {
+                let list = serde_json::from_slice(&data)
+                    .map_err(|e| SqliteError::SerializationError(e.to_string()))?;
+                Ok(list)
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
+    fn delete<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<(), Self::Error> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM openmls_storage WHERE key = ?1",
+            params![k.as_slice()],
+        )
+        .map_err(SqliteError::DatabaseError)?;
+
+        Ok(())
+    }
+}
+```
+
+### Create an encrypted storage provider
+
+Wrap any storage provider with encryption:
+
+```rust
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use rand::RngCore;
+
+pub struct EncryptedStorage<S: StorageProvider<CURRENT_VERSION>> {
+    inner: S,
+    cipher: Aes256Gcm,
+}
+
+#[derive(Debug)]
+pub enum EncryptionError<E: std::error::Error> {
+    StorageError(E),
+    EncryptionError(String),
+}
+
+impl<E: std::error::Error> std::fmt::Display for EncryptionError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::StorageError(e) => write!(f, "Storage error: {}", e),
+            Self::EncryptionError(e) => write!(f, "Encryption error: {}", e),
+        }
+    }
+}
+
+impl<E: std::error::Error> std::error::Error for EncryptionError<E> {}
+
+impl<S: StorageProvider<CURRENT_VERSION>> EncryptedStorage<S> {
+    pub fn new(inner: S, encryption_key: &[u8; 32]) -> Self {
+        let cipher = Aes256Gcm::new(encryption_key.into());
+        Self { inner, cipher }
+    }
+
+    fn encrypt(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        let ciphertext = self.cipher
+            .encrypt(nonce, data)
+            .map_err(|e| format!("Encryption failed: {}", e))?;
+
+        // Prepend nonce to ciphertext
+        let mut result = nonce_bytes.to_vec();
+        result.extend_from_slice(&ciphertext);
+        Ok(result)
+    }
+
+    fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, String> {
+        if data.len() < 12 {
+            return Err("Data too short".to_string());
+        }
+
+        let nonce = Nonce::from_slice(&data[..12]);
+        let ciphertext = &data[12..];
+
+        self.cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| format!("Decryption failed: {}", e))
+    }
+}
+
+impl<S: StorageProvider<CURRENT_VERSION>> StorageProvider<CURRENT_VERSION> 
+    for EncryptedStorage<S> 
+{
+    type Error = EncryptionError<S::Error>;
+
+    fn write<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        let serialized = serde_json::to_vec(v)
+            .map_err(|e| EncryptionError::EncryptionError(e.to_string()))?;
+        let encrypted = self.encrypt(&serialized)
+            .map_err(EncryptionError::EncryptionError)?;
+
+        // Store encrypted data as raw bytes
+        // Note: This requires the inner storage to support Vec<u8> entities
+        self.inner.write(k, &encrypted)
+            .map_err(EncryptionError::StorageError)
+    }
+
+    fn read<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Option<V>, Self::Error> {
+        let encrypted: Option<Vec<u8>> = self.inner.read(k)
+            .map_err(EncryptionError::StorageError)?;
+
+        match encrypted {
+            Some(data) => {
+                let decrypted = self.decrypt(&data)
+                    .map_err(EncryptionError::EncryptionError)?;
+                let value = serde_json::from_slice(&decrypted)
+                    .map_err(|e| EncryptionError::EncryptionError(e.to_string()))?;
+                Ok(Some(value))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // Implement other methods similarly...
+    fn append<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        todo!("Implement encrypted append")
+    }
+
+    fn read_list<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<Vec<V>, Self::Error> {
+        todo!("Implement encrypted read_list")
+    }
+
+    fn delete<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+    ) -> Result<(), Self::Error> {
+        self.inner.delete(k)
+            .map_err(EncryptionError::StorageError)
+    }
+}
+```
+
+### Use custom storage with OpenMLS
+
+Integrate your storage provider:
+
+```rust
+use openmls::prelude::*;
+use openmls_traits::OpenMlsProvider;
+
+struct CustomProvider {
+    crypto: openmls_rust_crypto::RustCrypto,
+    storage: SqliteStorage,
+}
+
+impl OpenMlsProvider for CustomProvider {
+    type CryptoProvider = openmls_rust_crypto::RustCrypto;
+    type RandProvider = openmls_rust_crypto::RustCrypto;
+    type StorageProvider = SqliteStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create provider with SQLite storage
+    let provider = CustomProvider {
+        crypto: openmls_rust_crypto::RustCrypto::default(),
+        storage: SqliteStorage::new("openmls.db")?,
+    };
+
+    // Use with OpenMLS
+    let ciphersuite = 
+        Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+    
+    let credential = BasicCredential::new(b"Alice".to_vec());
+    let signature_keys = SignatureKeyPair::new(
+        ciphersuite.signature_algorithm()
+    )?;
+
+    signature_keys.store(provider.storage())?;
+
+    let credential_with_key = CredentialWithKey {
+        credential: credential.into(),
+        signature_key: signature_keys.public().into(),
+    };
+
+    let mut group = MlsGroup::new(
+        &provider,
+        &signature_keys,
+        &MlsGroupCreateConfig::default(),
+        credential_with_key,
+    )?;
+
+    println!("Group created with SQLite storage!");
+    println!("Group ID: {:?}", group.group_id());
+
+    // Group state is automatically persisted to SQLite
+    Ok(())
+}
+```
+
+</Steps>
+
+## Cloud Storage Example
+
+For cloud-based storage (e.g., AWS S3):
+
+```rust
+use aws_sdk_s3::Client;
+
+pub struct S3Storage {
+    client: Client,
+    bucket: String,
+    prefix: String,
+}
+
+impl S3Storage {
+    pub async fn new(bucket: String, prefix: String) -> Self {
+        let config = aws_config::load_from_env().await;
+        let client = Client::new(&config);
+        
+        Self { client, bucket, prefix }
+    }
+
+    fn key_to_s3_key<V: Entity<CURRENT_VERSION>>(&self, key: &Key<V>) -> String {
+        format!("{}/{}", self.prefix, hex::encode(key.as_slice()))
+    }
+}
+
+impl StorageProvider<CURRENT_VERSION> for S3Storage {
+    type Error = S3Error;
+
+    fn write<V: Entity<CURRENT_VERSION>>(
+        &self,
+        k: &Key<V>,
+        v: &V,
+    ) -> Result<(), Self::Error> {
+        let serialized = serde_json::to_vec(v)?;
+        let s3_key = self.key_to_s3_key(k);
+
+        // Async operation - use runtime
+        tokio::runtime::Runtime::new()?.block_on(async {
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(s3_key)
+                .body(serialized.into())
+                .send()
+                .await
+        })?;
+
+        Ok(())
+    }
+
+    // Implement other methods...
+}
+```
+
+## Best Practices
+
+1. **Atomic Operations**: Ensure write operations are atomic
+2. **Encryption**: Encrypt sensitive data at rest
+3. **Backups**: Implement regular backup strategies
+4. **Caching**: Use in-memory caching for frequently accessed data
+5. **Error Handling**: Provide detailed error information
+
+## Next Steps
+
+- Combine with [custom crypto](/examples/custom-crypto) for complete provider
+- Implement [server integration](/examples/server-integration) with persistent storage
+- Learn about [key rotation](/examples/key-rotation) and state management

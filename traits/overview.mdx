@@ -1,0 +1,152 @@
+---
+title: Provider traits overview
+description: Understanding OpenMLS provider traits and their role in the architecture
+---
+
+OpenMLS defines several traits that must be implemented to use the library. The main goal is to allow OpenMLS to use different implementations for cryptographic primitives, persistence, and random number generation. This makes it possible to plug in anything from WebCrypto to secure enclaves.
+
+## The provider architecture
+
+OpenMLS separates concerns through a provider pattern. The main `OpenMlsProvider` trait combines three sub-providers:
+
+```rust
+pub trait OpenMlsProvider {
+    type CryptoProvider: crypto::OpenMlsCrypto;
+    type RandProvider: random::OpenMlsRand;
+    type StorageProvider: storage::StorageProvider<{ storage::CURRENT_VERSION }>;
+
+    fn storage(&self) -> &Self::StorageProvider;
+    fn crypto(&self) -> &Self::CryptoProvider;
+    fn rand(&self) -> &Self::RandProvider;
+}
+```
+
+This architecture allows you to mix and match implementations. For example, you can use the default crypto provider with your own custom storage implementation.
+
+## Core provider traits
+
+OpenMLS requires implementations for three main provider traits:
+
+<CardGroup cols={3}>
+  <Card title="Crypto provider" icon="lock" href="/traits/crypto-provider">
+    Handles all cryptographic operations including HKDF, hashing, AEAD, signatures, and HPKE
+  </Card>
+  <Card title="Random provider" icon="dice" href="/traits/random-provider">
+    Provides cryptographically secure random number generation
+  </Card>
+  <Card title="Storage provider" icon="database" href="/traits/storage-provider">
+    Manages persistence of group state, keys, and other OpenMLS data
+  </Card>
+</CardGroup>
+
+## Default implementations
+
+<Warning>
+These traits are responsible for all cryptographic operations and randomness within OpenMLS. Please ensure you know what you're doing when implementing your own versions.
+</Warning>
+
+Because implementing the crypto provider is challenging and requires tremendous care, OpenMLS provides two production-ready implementations:
+
+### Rust crypto provider
+
+The go-to default implementation using commonly used, native Rust crypto libraries.
+
+**Supported ciphersuites:**
+- `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`
+- `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519`
+- `MLS_128_DHKEMP256_AES128GCM_SHA256_P256`
+
+```rust
+use openmls_rust_crypto::OpenMlsRustCrypto;
+
+let provider = OpenMlsRustCrypto::default();
+```
+
+### Libcrux crypto provider
+
+A crypto provider backed by the high-assurance cryptography library [libcrux](https://github.com/cryspen/libcrux).
+
+**Supported ciphersuites:**
+- `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`
+- `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519`
+- `MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519`
+
+## Storage implementations
+
+OpenMLS provides two storage implementations:
+
+<CardGroup cols={2}>
+  <Card title="Memory storage" icon="memory">
+    In-memory storage using a `HashMap`. Suitable for testing or ephemeral applications.
+  </Card>
+  <Card title="SQLite storage" icon="database">
+    Persistent storage using SQLite. Suitable for production applications requiring persistence.
+  </Card>
+</CardGroup>
+
+## When to implement custom providers
+
+You should consider implementing custom providers when:
+
+- **Storage provider**: You need persistent storage with a specific backend (PostgreSQL, Redis, etc.)
+- **Crypto provider**: You need to integrate with hardware security modules (HSMs) or platform-specific crypto APIs
+- **Random provider**: You need to use a specific entropy source or integrate with platform-specific random number generators
+
+<Info>
+It is not necessary to implement all sub-traits. If you only need custom storage, implement the `StorageProvider` trait and combine it with the provided crypto and randomness implementations.
+</Info>
+
+## Implementation notes
+
+### Mixing implementations
+
+You can combine different implementations of the sub-traits:
+
+```rust
+use openmls_rust_crypto::RustCrypto;
+use my_storage::CustomStorage;
+
+struct MyProvider {
+    crypto: RustCrypto,
+    storage: CustomStorage,
+}
+
+impl OpenMlsProvider for MyProvider {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = RustCrypto;
+    type StorageProvider = CustomStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+### Thread safety
+
+All provider traits require `Send + Sync` implementation for thread safety. Ensure your implementations are thread-safe if you plan to use OpenMLS in a multi-threaded environment.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Implement crypto provider" icon="shield" href="/traits/crypto-provider">
+    Learn about the crypto provider trait and its methods
+  </Card>
+  <Card title="Implement storage provider" icon="database" href="/traits/storage-provider">
+    Learn about the storage provider trait and persistence
+  </Card>
+  <Card title="Custom implementation guide" icon="code" href="/traits/custom-implementation">
+    Step-by-step guide to implementing custom providers
+  </Card>
+  <Card title="Random provider" icon="random" href="/traits/random-provider">
+    Learn about the random provider trait
+  </Card>
+</CardGroup>

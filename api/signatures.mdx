@@ -1,0 +1,509 @@
+---
+title: Signatures
+description: Signature schemes and cryptographic signing operations
+---
+
+## Overview
+
+OpenMLS uses digital signatures to authenticate MLS protocol messages. This module provides types and operations for:
+
+- Creating and managing signature keys
+- Signing data with labeled signatures
+- Verifying signatures against public keys
+- Type-safe signature workflows
+
+## Signature
+
+A cryptographic signature value.
+
+<ParamField path="Signature" type="struct">
+  Digital signature over signed content
+
+  <Expandable title="Fields">
+    <ResponseField name="value" type="VLBytes">
+      The raw signature bytes
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Conversions
+
+<ResponseField name="From<Vec<u8>>" type="impl">
+  Creates a signature from raw bytes
+
+  ```rust
+  impl From<Vec<u8>> for Signature
+  ```
+</ResponseField>
+
+## SignaturePublicKey
+
+A public signature verification key.
+
+<ParamField path="SignaturePublicKey" type="struct">
+  Public key for signature verification
+
+  <Expandable title="Fields">
+    <ResponseField name="value" type="VLBytes">
+      The raw public key bytes
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+<ResponseField name="into_signature_public_key_enriched" type="fn(self, SignatureScheme) -> OpenMlsSignaturePublicKey">
+  Converts the raw signature key into an enriched form with signature scheme
+
+  ```rust
+  pub fn into_signature_public_key_enriched(
+      self,
+      signature_scheme: SignatureScheme,
+  ) -> OpenMlsSignaturePublicKey
+  ```
+</ResponseField>
+
+<ResponseField name="as_slice" type="fn(&self) -> &[u8]">
+  Returns the key bytes as a slice
+
+  ```rust
+  pub fn as_slice(&self) -> &[u8]
+  ```
+</ResponseField>
+
+### Conversions
+
+<ResponseField name="From<Vec<u8>>" type="impl">
+  Creates a signature public key from bytes
+
+  ```rust
+  impl From<Vec<u8>> for SignaturePublicKey
+  ```
+</ResponseField>
+
+<ResponseField name="From<&[u8]>" type="impl">
+  Creates a signature public key from a byte slice
+
+  ```rust
+  impl From<&[u8]> for SignaturePublicKey
+  ```
+</ResponseField>
+
+<ResponseField name="From<OpenMlsSignaturePublicKey>" type="impl">
+  Converts from enriched to raw signature public key
+
+  ```rust
+  impl From<OpenMlsSignaturePublicKey> for SignaturePublicKey
+  ```
+</ResponseField>
+
+## OpenMlsSignaturePublicKey
+
+An enriched public signature key that includes the signature scheme.
+
+<ParamField path="OpenMlsSignaturePublicKey" type="struct">
+  Signature public key with associated signature scheme
+
+  <Expandable title="Fields">
+    <ResponseField name="signature_scheme" type="SignatureScheme">
+      The signature algorithm used with this key
+    </ResponseField>
+
+    <ResponseField name="value" type="VLBytes">
+      The raw public key bytes
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Methods
+
+<ResponseField name="new" type="fn(VLBytes, SignatureScheme) -> Result<Self, CryptoError>">
+  Creates a new signature public key with the given bytes and scheme
+
+  ```rust
+  pub fn new(value: VLBytes, signature_scheme: SignatureScheme) -> Result<Self, CryptoError>
+  ```
+</ResponseField>
+
+<ResponseField name="from_signature_key" type="fn(SignaturePublicKey, SignatureScheme) -> Self">
+  Creates an enriched key from a raw signature key and scheme
+
+  ```rust
+  pub fn from_signature_key(key: SignaturePublicKey, signature_scheme: SignatureScheme) -> Self
+  ```
+</ResponseField>
+
+<ResponseField name="signature_scheme" type="fn(&self) -> SignatureScheme">
+  Returns the signature scheme
+
+  ```rust
+  pub fn signature_scheme(&self) -> SignatureScheme
+  ```
+</ResponseField>
+
+<ResponseField name="as_slice" type="fn(&self) -> &[u8]">
+  Returns the key bytes as a slice
+
+  ```rust
+  pub fn as_slice(&self) -> &[u8]
+  ```
+</ResponseField>
+
+## SignatureScheme
+
+Signature algorithms according to IANA TLS parameters.
+
+<ParamField path="SignatureScheme" type="enum">
+  Supported signature schemes
+
+  <Expandable title="Variants">
+    <ParamField path="ECDSA_SECP256R1_SHA256" type="0x0403">
+      ECDSA with P-256 curve and SHA-256
+    </ParamField>
+
+    <ParamField path="ECDSA_SECP384R1_SHA384" type="0x0503">
+      ECDSA with P-384 curve and SHA-384
+    </ParamField>
+
+    <ParamField path="ECDSA_SECP521R1_SHA512" type="0x0603">
+      ECDSA with P-521 curve and SHA-512
+    </ParamField>
+
+    <ParamField path="ED25519" type="0x0807">
+      Ed25519 signature scheme
+    </ParamField>
+
+    <ParamField path="ED448" type="0x0808">
+      Ed448 signature scheme
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### Conversions
+
+<ResponseField name="TryFrom<u16>" type="impl">
+  Attempts to convert a u16 value to a SignatureScheme
+
+  ```rust
+  impl TryFrom<u16> for SignatureScheme
+  ```
+
+  Returns an error if the value doesn't correspond to a supported scheme.
+</ResponseField>
+
+## SignContent
+
+Labeled signature content used for signing operations.
+
+<ParamField path="SignContent" type="struct">
+  Content to be signed with MLS label prefix
+
+  <Expandable title="Fields">
+    <ResponseField name="label" type="VLBytes">
+      The label string prefixed with "MLS 1.0 "
+    </ResponseField>
+
+    <ResponseField name="content" type="VLBytes">
+      The content bytes to sign
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### MLS Signature Format
+
+MLS uses labeled signatures with the format:
+
+```text
+struct {
+    opaque label<V> = "MLS 1.0 " + Label;
+    opaque content<V> = Content;
+} SignContent;
+```
+
+### Methods
+
+<ResponseField name="new" type="fn(&str, VLBytes) -> Self">
+  Creates new SignContent with a label and content
+
+  ```rust
+  pub fn new(label: &str, content: VLBytes) -> Self
+  ```
+
+  The label is automatically prefixed with "MLS 1.0 ".
+</ResponseField>
+
+## Signing Traits
+
+### Signable
+
+Trait for structs that can be signed.
+
+<ResponseField name="Signable" type="trait">
+  Implemented by structs that need to be signed
+
+  ```rust
+  pub trait Signable: Sized {
+      type SignedOutput;
+
+      fn unsigned_payload(&self) -> Result<Vec<u8>, tls_codec::Error>;
+      fn label(&self) -> &str;
+      fn sign(self, signer: &impl Signer) -> Result<Self::SignedOutput, SignatureError>;
+  }
+  ```
+
+  <Expandable title="Associated Types">
+    <ResponseField name="SignedOutput">
+      The type produced after signing (must implement SignedStruct)
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Required Methods">
+    <ResponseField name="unsigned_payload">
+      Returns the serialized payload to be signed
+    </ResponseField>
+
+    <ResponseField name="label">
+      Returns the label string for labeled signing
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Provided Methods">
+    <ResponseField name="sign">
+      Signs the payload and returns the signed struct
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### SignedStruct
+
+Marker trait for signed structs.
+
+<ResponseField name="SignedStruct" type="trait">
+  Implemented by structs containing a signature
+
+  ```rust
+  pub trait SignedStruct<T> {
+      fn from_payload(payload: T, signature: Signature, serialized_payload: Vec<u8>) -> Self;
+  }
+  ```
+</ResponseField>
+
+### Verifiable
+
+Trait for structs that can be verified.
+
+<ResponseField name="Verifiable" type="trait">
+  Implemented by structs with signatures that need verification
+
+  ```rust
+  pub trait Verifiable: Sized {
+      type VerifiedStruct: VerifiedStruct;
+
+      fn unsigned_payload(&self) -> Result<Vec<u8>, tls_codec::Error>;
+      fn signature(&self) -> &Signature;
+      fn label(&self) -> &str;
+      fn verify(
+          self,
+          crypto: &impl OpenMlsCrypto,
+          pk: &OpenMlsSignaturePublicKey,
+      ) -> Result<Self::VerifiedStruct, SignatureError>;
+      fn verify_no_out(
+          &self,
+          crypto: &impl OpenMlsCrypto,
+          pk: &OpenMlsSignaturePublicKey,
+      ) -> Result<(), SignatureError>;
+  }
+  ```
+
+  <Expandable title="Associated Types">
+    <ResponseField name="VerifiedStruct">
+      The type produced after verification
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Required Methods">
+    <ResponseField name="unsigned_payload">
+      Returns the serialized payload that was signed
+    </ResponseField>
+
+    <ResponseField name="signature">
+      Returns a reference to the signature
+    </ResponseField>
+
+    <ResponseField name="label">
+      Returns the label used for signing
+    </ResponseField>
+
+    <ResponseField name="verify">
+      Verifies the signature and returns the verified struct
+    </ResponseField>
+  </Expandable>
+
+  <Expandable title="Provided Methods">
+    <ResponseField name="verify_no_out">
+      Verifies the signature without consuming self
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### VerifiedStruct
+
+Marker trait for verified structs.
+
+<ResponseField name="VerifiedStruct" type="trait">
+  Marker trait for structs with verified signatures
+
+  ```rust
+  pub trait VerifiedStruct {}
+  ```
+</ResponseField>
+
+## Errors
+
+### SignatureError
+
+<ResponseField name="SignatureError" type="enum">
+  Signature generation and verification errors
+
+  <Expandable title="Variants">
+    <ResponseField name="VerificationError">
+      Signature verification failed
+    </ResponseField>
+
+    <ResponseField name="SigningError">
+      Signature generation failed
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Usage Examples
+
+### Creating Signature Keys
+
+```rust
+use openmls::prelude::*;
+use openmls_basic_credential::SignatureKeyPair;
+
+let signature_scheme = SignatureScheme::ED25519;
+
+// Generate a new key pair
+let keypair = SignatureKeyPair::new(signature_scheme)
+    .expect("Failed to generate signature key pair");
+
+// Get the public key
+let public_key: SignaturePublicKey = keypair.public().into();
+
+// Create enriched public key
+let enriched_key = public_key.into_signature_public_key_enriched(signature_scheme);
+```
+
+### Signing with Signable Trait
+
+```rust
+use openmls::prelude::*;
+
+// Example: KeyPackageTbs implements Signable
+let key_package_tbs = KeyPackageTbs {
+    protocol_version: ProtocolVersion::default(),
+    ciphersuite,
+    init_key,
+    leaf_node,
+    extensions,
+};
+
+// Sign to produce KeyPackage (which implements SignedStruct)
+let key_package = key_package_tbs.sign(&signer)?;
+```
+
+### Verifying Signatures
+
+```rust
+use openmls::prelude::*;
+
+// Deserialize an unverified struct (implements Verifiable)
+let key_package_in = KeyPackageIn::tls_deserialize(&mut bytes)?;
+
+// Get the public key from the credential
+let public_key = OpenMlsSignaturePublicKey::from_signature_key(
+    credential.signature_key().clone(),
+    signature_scheme,
+);
+
+// Verify and get verified struct
+let verified = key_package_in.verify(provider.crypto(), &public_key)?;
+```
+
+### Creating Labeled Sign Content
+
+```rust
+use openmls::ciphersuite::{SignContent, LABEL_PREFIX};
+use tls_codec::Serialize;
+
+let label = "KeyPackageTBS";
+let content = payload_bytes.into();
+
+let sign_content = SignContent::new(label, content);
+let to_sign = sign_content.tls_serialize_detached()?;
+
+// The actual bytes signed include:
+// "MLS 1.0 KeyPackageTBS" + payload_bytes
+```
+
+### Signature Scheme Selection
+
+```rust
+use openmls::prelude::*;
+
+// Get signature scheme from ciphersuite
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+let sig_scheme = ciphersuite.signature_algorithm();
+// Returns: SignatureScheme::ED25519
+
+// Match on signature scheme
+match sig_scheme {
+    SignatureScheme::ED25519 => println!("Using Ed25519"),
+    SignatureScheme::ECDSA_SECP256R1_SHA256 => println!("Using ECDSA P-256"),
+    _ => println!("Other scheme"),
+}
+```
+
+## Type-Safe Signature Workflow
+
+OpenMLS uses type-level enforcement to ensure correct signature handling:
+
+```rust
+// 1. Create unsigned struct (implements Signable)
+let unsigned = KeyPackageTbs { /* ... */ };
+
+// 2. Sign it (consumes unsigned, produces SignedStruct)
+let signed = unsigned.sign(&signer)?;
+
+// 3. Serialize and send
+let bytes = signed.tls_serialize_detached()?;
+
+// 4. Receiver deserializes (produces Verifiable)
+let verifiable = KeyPackageIn::tls_deserialize(&mut bytes)?;
+
+// 5. Verify (consumes verifiable, produces VerifiedStruct)
+let verified = verifiable.verify(crypto, &public_key)?;
+
+// 6. Only verified structs can be used in protocol operations
+process_key_package(verified);
+```
+
+<Note>
+  The type system ensures:
+  - Only signed structs are serialized
+  - Only verified structs are used in protocol logic
+  - Unverified data cannot be accidentally processed
+</Note>
+
+## Security Considerations
+
+<Warning>
+  - Always verify signatures before processing received data
+  - Use the correct signature scheme for the ciphersuite
+  - Protect private signature keys appropriately
+  - The MLS label prefix ("MLS 1.0 ") is critical for domain separation
+  - Signature verification errors should be treated as security events
+</Warning>

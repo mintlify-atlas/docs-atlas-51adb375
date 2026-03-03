@@ -1,0 +1,137 @@
+---
+title: Extensions Overview
+description: Overview of MLS extensions in OpenMLS
+---
+
+Extensions in MLS allow applications to add additional functionality and metadata to various MLS structures. Extensions can appear in KeyPackages, GroupInfo, GroupContext, and LeafNodes.
+
+## Extension Types
+
+OpenMLS supports the following standard MLS extensions:
+
+| Extension Type | Value | Context | Description |
+|----------------|-------|---------|-------------|
+| `ApplicationId` | 0x0001 | LeafNode | Application-defined identifier for a KeyPackage |
+| `RatchetTree` | 0x0002 | GroupInfo | Complete public state of the ratchet tree |
+| `RequiredCapabilities` | 0x0003 | GroupContext | Required capabilities for group members |
+| `ExternalPub` | 0x0004 | GroupInfo | Public key for external commits |
+| `ExternalSenders` | 0x0005 | GroupContext | Authorized external senders |
+| `LastResort` | 0x000A | KeyPackage | Marks KeyPackage for last resort use |
+
+## Extension Contexts
+
+Extensions are validated based on their context:
+
+### LeafNode Extensions
+Valid extensions:
+- `ApplicationId`
+- `Unknown` (custom extensions)
+
+### GroupInfo Extensions
+Valid extensions:
+- `RatchetTree`
+- `ExternalPub`
+
+### GroupContext Extensions
+Valid extensions:
+- `RequiredCapabilities`
+- `ExternalSenders`
+- `Unknown` (custom extensions)
+
+### KeyPackage Extensions
+Valid extensions:
+- `LastResort`
+- `Unknown` (custom extensions)
+
+## Extension Structure
+
+```rust
+pub enum Extension {
+    ApplicationId(ApplicationIdExtension),
+    RatchetTree(RatchetTreeExtension),
+    RequiredCapabilities(RequiredCapabilitiesExtension),
+    ExternalPub(ExternalPubExtension),
+    ExternalSenders(ExternalSendersExtension),
+    LastResort(LastResortExtension),
+    Unknown(u16, UnknownExtension),
+}
+```
+
+## Wire Format
+
+Extensions are serialized using the TLS presentation language:
+
+```c
+struct {
+    ExtensionType extension_type;
+    opaque extension_data<V>;
+} Extension;
+```
+
+## Working with Extensions
+
+### Creating Extensions
+
+```rust
+use openmls::prelude::*;
+
+// Create an application ID extension
+let app_id = Extension::ApplicationId(
+    ApplicationIdExtension::new(b"my-app-id")
+);
+
+// Create extensions list
+let mut extensions = Extensions::<LeafNode>::empty();
+extensions.add(app_id)?;
+```
+
+### Accessing Extensions
+
+```rust
+// Check if extension exists
+if extensions.contains(ExtensionType::ApplicationId) {
+    // Get the extension
+    if let Some(app_id) = extensions.application_id() {
+        println!("Application ID: {:?}", app_id.as_slice());
+    }
+}
+```
+
+### Default Extensions
+
+The following extensions are considered "default" and are always supported:
+- `ApplicationId`
+- `RatchetTree`
+- `RequiredCapabilities`
+- `ExternalPub`
+- `ExternalSenders`
+
+## Validation
+
+Extensions are validated when:
+1. Added to an extension list (duplicate check)
+2. Used in specific contexts (context validation)
+3. Required capabilities are checked against leaf node capabilities
+
+## Custom Extensions
+
+Applications can define custom extensions using the `Unknown` variant:
+
+```rust
+let custom_data = vec![0x01, 0x02, 0x03];
+let custom_ext = Extension::Unknown(
+    0xF000,  // Custom extension type
+    UnknownExtension(custom_data)
+);
+```
+
+## GREASE Values
+
+OpenMLS supports GREASE (Generate Random Extensions And Sustain Extensibility) values per RFC 9420 Section 13.5 to ensure implementations properly handle unknown extension types.
+
+## See Also
+
+- [Required Capabilities](/api/extensions/required-capabilities)
+- [External Senders](/api/extensions/external-senders)
+- [Application ID](/api/extensions/application-id)
+- [Custom Extensions](/api/extensions/custom)

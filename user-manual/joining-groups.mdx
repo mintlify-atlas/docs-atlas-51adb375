@@ -1,0 +1,193 @@
+---
+title: Joining groups
+description: Learn how to join an existing MLS group via Welcome messages or external commits
+---
+
+There are two ways to join an existing MLS group in OpenMLS: receiving a Welcome message from an existing member, or creating an external commit to join the group from the outside.
+
+## Joining from a Welcome message
+
+When you're added to a group, you'll receive a `Welcome` message. This is a two-step process that allows you to inspect the welcome before fully joining.
+
+<Steps>
+
+### Deserialize the incoming message
+
+First, deserialize the message from the delivery service:
+
+```rust
+use openmls::prelude::*;
+
+let mls_message_in = MlsMessageIn::tls_deserialize(&mut serialized_message.as_slice())?;
+```
+
+### Process the Welcome message
+
+Create a `ProcessedWelcome` from the message:
+
+```rust
+let welcome = match mls_message_in.extract() {
+    MlsMessageBodyIn::Welcome(welcome) => welcome,
+    _ => return Err("Expected a Welcome message"),
+};
+
+let processed_welcome = ProcessedWelcome::new_from_welcome(
+    provider,
+    &mls_group_join_config,
+    welcome,
+)?;
+```
+
+### Stage the welcome
+
+Combine the processed welcome with the ratchet tree:
+
+```rust
+let staged_welcome = processed_welcome.into_staged_welcome(
+    provider,
+    ratchet_tree, // Option<RatchetTreeIn>
+)?;
+```
+
+<Note>
+If the group uses the ratchet tree extension, you can pass `None` for the ratchet tree parameter. Otherwise, you must provide the ratchet tree from the member who added you.
+</Note>
+
+### Create the group
+
+Finally, convert the staged welcome into an `MlsGroup`:
+
+```rust
+let bob_group = staged_welcome.into_group(provider)?;
+```
+
+</Steps>
+
+## Examining a Welcome message
+
+Before joining, you can inspect the Welcome message to decide whether to accept the invitation:
+
+```rust
+use openmls::prelude::*;
+
+// Get information about who invited you
+let welcome_sender_index = staged_welcome.welcome_sender_index();
+let welcome_sender = staged_welcome.welcome_sender()?;
+let sender_credential = welcome_sender.credential();
+
+// Check group members
+for member in staged_welcome.members() {
+    println!("Member credential: {:?}", member.credential);
+}
+
+// Inspect group context
+let group_context = staged_welcome.group_context();
+let protocol_version = group_context.protocol_version();
+let extensions = group_context.extensions();
+```
+
+### Discarding an unwanted Welcome
+
+If you decide not to join, you should properly clean up the welcome to ensure local state is deleted.
+
+<Warning>
+Always validate credentials before joining a group. See the [credential validation](/user-manual/credential-validation) guide for details.
+</Warning>
+
+## Using the join builder
+
+For more control over the join process, use the builder pattern:
+
+```rust
+use openmls::prelude::*;
+
+let staged_welcome = StagedWelcome::build_from_welcome(
+    provider,
+    &mls_group_join_config,
+    welcome,
+)?
+.with_ratchet_tree(ratchet_tree)
+.skip_lifetime_validation() // Optional: skip leaf node lifetime checks
+.build()?;
+
+let bob_group = staged_welcome.into_group(provider)?;
+```
+
+## Joining via external commit
+
+External commits allow you to join a group without being added by an existing member. You'll need the group's `GroupInfo` and ratchet tree.
+
+<Steps>
+
+### Obtain the GroupInfo
+
+The `GroupInfo` should be obtained over a secure channel from an existing group member or the delivery service.
+
+### Build the external commit
+
+Use the external commit builder:
+
+```rust
+use openmls::prelude::*;
+
+let (mls_group, commit_message, group_info) = MlsGroup::external_commit_builder(
+    provider.crypto(),
+    &provider,
+    signer,
+    verifiable_group_info,
+    credential_with_key,
+)
+.with_ratchet_tree(ratchet_tree)
+.with_aad(b"external commit")
+.leaf_node_parameters(
+    LeafNodeParameters::builder()
+        .with_capabilities(capabilities)
+        .build()
+)
+.load_psks(provider.storage())?
+.build(provider.rand(), provider.crypto(), signer, |_| true)?
+.finalize(provider)?;
+```
+
+### Send and merge the commit
+
+Send the external commit to the delivery service and wait for acceptance:
+
+```rust
+// Send commit_message to the delivery service
+delivery_service.send(commit_message)?;
+
+// The group starts with a pending commit
+// Once accepted, merge it:
+mls_group.merge_pending_commit(provider)?;
+```
+
+</Steps>
+
+<Note>
+When joining via external commit, the resulting `MlsGroup` instance starts with a pending commit. You must merge this commit for the group to function properly. If the external commit is rejected, you'll need to create a new external commit based on the latest group state.
+</Note>
+
+## Important considerations
+
+<Warning>
+Do not forward a Welcome message to a client before the associated commit has been accepted by the delivery service. This would result in an invalid MLS group instance.
+</Warning>
+
+## Related types
+
+- `ProcessedWelcome::new_from_welcome()` - Processes a Welcome message
+- `StagedWelcome::into_group()` - Converts a staged welcome into an MlsGroup
+- `MlsGroup::external_commit_builder()` - Creates an external commit to join a group
+- `MlsGroupJoinConfig` - Configuration for joining groups
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Processing messages" href="./processing-messages">
+    Learn how to handle incoming messages
+  </Card>
+  <Card title="Sending messages" href="./sending-messages">
+    Start sending messages to the group
+  </Card>
+</CardGroup>

@@ -1,0 +1,295 @@
+---
+title: Ciphersuite
+description: Ciphersuite types and cryptographic configuration for OpenMLS
+---
+
+## Overview
+
+Ciphersuites define the cryptographic algorithms used in MLS protocol operations. Each ciphersuite specifies a combination of:
+
+- HPKE KEM (Key Encapsulation Mechanism)
+- AEAD (Authenticated Encryption with Associated Data)
+- Hash algorithm
+- Signature scheme
+
+## Supported Ciphersuites
+
+OpenMLS supports the following ciphersuites:
+
+- **MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519** (MTI - Mandatory to Implement)
+- **MLS_128_DHKEMP256_AES128GCM_SHA256_P256**
+- **MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519**
+
+## Ciphersuite
+
+The main ciphersuite enum defining all supported cryptographic configurations.
+
+<ParamField path="Ciphersuite" type="enum">
+  MLS ciphersuite enumeration
+
+  <Expandable title="Variants">
+    <ParamField path="MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519" type="0x0001">
+      DH KEM x25519 | AES-GCM 128 | SHA2-256 | Ed25519 (Mandatory to Implement)
+    </ParamField>
+
+    <ParamField path="MLS_128_DHKEMP256_AES128GCM_SHA256_P256" type="0x0002">
+      DH KEM P256 | AES-GCM 128 | SHA2-256 | EcDSA P256
+    </ParamField>
+
+    <ParamField path="MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519" type="0x0003">
+      DH KEM x25519 | Chacha20Poly1305 | SHA2-256 | Ed25519
+    </ParamField>
+
+    <ParamField path="MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448" type="0x0004">
+      DH KEM x448 | AES-GCM 256 | SHA2-512 | Ed448
+    </ParamField>
+
+    <ParamField path="MLS_256_DHKEMP521_AES256GCM_SHA512_P521" type="0x0005">
+      DH KEM P521 | AES-GCM 256 | SHA2-512 | EcDSA P521
+    </ParamField>
+
+    <ParamField path="MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448" type="0x0006">
+      DH KEM x448 | Chacha20Poly1305 | SHA2-512 | Ed448
+    </ParamField>
+
+    <ParamField path="MLS_256_DHKEMP384_AES256GCM_SHA384_P384" type="0x0007">
+      DH KEM P384 | AES-GCM 256 | SHA2-384 | EcDSA P384
+    </ParamField>
+
+    <ParamField path="MLS_256_XWING_CHACHA20POLY1305_SHA256_Ed25519" type="0x004D">
+      X-WING KEM draft-01 | Chacha20Poly1305 | SHA2-256 | Ed25519
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Methods
+
+### Algorithm Accessors
+
+<ResponseField name="hash_algorithm" type="fn(&self) -> HashType">
+  Returns the hash algorithm for this ciphersuite
+
+  ```rust
+  pub const fn hash_algorithm(&self) -> HashType
+  ```
+</ResponseField>
+
+<ResponseField name="signature_algorithm" type="fn(&self) -> SignatureScheme">
+  Returns the signature scheme for this ciphersuite
+
+  ```rust
+  pub const fn signature_algorithm(&self) -> SignatureScheme
+  ```
+</ResponseField>
+
+<ResponseField name="aead_algorithm" type="fn(&self) -> AeadType">
+  Returns the AEAD algorithm for this ciphersuite
+
+  ```rust
+  pub const fn aead_algorithm(&self) -> AeadType
+  ```
+</ResponseField>
+
+<ResponseField name="hpke_kdf_algorithm" type="fn(&self) -> HpkeKdfType">
+  Returns the HPKE KDF algorithm for this ciphersuite
+
+  ```rust
+  pub const fn hpke_kdf_algorithm(&self) -> HpkeKdfType
+  ```
+</ResponseField>
+
+<ResponseField name="hpke_kem_algorithm" type="fn(&self) -> HpkeKemType">
+  Returns the HPKE KEM algorithm for this ciphersuite
+
+  ```rust
+  pub const fn hpke_kem_algorithm(&self) -> HpkeKemType
+  ```
+</ResponseField>
+
+<ResponseField name="hpke_aead_algorithm" type="fn(&self) -> HpkeAeadType">
+  Returns the HPKE AEAD algorithm for this ciphersuite
+
+  ```rust
+  pub const fn hpke_aead_algorithm(&self) -> HpkeAeadType
+  ```
+</ResponseField>
+
+<ResponseField name="hpke_config" type="fn(&self) -> HpkeConfig">
+  Returns the complete HPKE configuration (KEM, KDF, AEAD) for this ciphersuite
+
+  ```rust
+  pub const fn hpke_config(&self) -> HpkeConfig
+  ```
+</ResponseField>
+
+### Length Accessors
+
+<ResponseField name="hash_length" type="fn(&self) -> usize">
+  Returns the output length of the hash algorithm in bytes
+
+  ```rust
+  pub const fn hash_length(&self) -> usize
+  ```
+</ResponseField>
+
+<ResponseField name="mac_length" type="fn(&self) -> usize">
+  Returns the length of the AEAD tag in bytes
+
+  ```rust
+  pub const fn mac_length(&self) -> usize
+  ```
+</ResponseField>
+
+<ResponseField name="aead_key_length" type="fn(&self) -> usize">
+  Returns the key size of the AEAD in bytes
+
+  ```rust
+  pub const fn aead_key_length(&self) -> usize
+  ```
+</ResponseField>
+
+<ResponseField name="aead_nonce_length" type="fn(&self) -> usize">
+  Returns the nonce length of the AEAD in bytes
+
+  ```rust
+  pub const fn aead_nonce_length(&self) -> usize
+  ```
+</ResponseField>
+
+## Supporting Types
+
+### HashType
+
+<ParamField path="HashType" type="enum">
+  Hash algorithm types
+
+  <Expandable title="Variants">
+    <ParamField path="Sha2_256" type="0x04">
+      SHA-256 (32 byte output)
+    </ParamField>
+
+    <ParamField path="Sha2_384" type="0x05">
+      SHA-384 (48 byte output)
+    </ParamField>
+
+    <ParamField path="Sha2_512" type="0x06">
+      SHA-512 (64 byte output)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### AeadType
+
+<ParamField path="AeadType" type="enum">
+  AEAD algorithm types
+
+  <Expandable title="Variants">
+    <ParamField path="Aes128Gcm" type="0x0001">
+      AES-GCM 128 (16 byte key, 16 byte tag)
+    </ParamField>
+
+    <ParamField path="Aes256Gcm" type="0x0002">
+      AES-GCM 256 (32 byte key, 16 byte tag)
+    </ParamField>
+
+    <ParamField path="ChaCha20Poly1305" type="0x0003">
+      ChaCha20-Poly1305 (32 byte key, 16 byte tag)
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### HpkeKemType
+
+<ParamField path="HpkeKemType" type="enum">
+  HPKE Key Encapsulation Mechanism types
+
+  <Expandable title="Variants">
+    <ParamField path="DhKemP256" type="0x0010">
+      DH KEM on P-256
+    </ParamField>
+
+    <ParamField path="DhKemP384" type="0x0011">
+      DH KEM on P-384
+    </ParamField>
+
+    <ParamField path="DhKemP521" type="0x0012">
+      DH KEM on P-521
+    </ParamField>
+
+    <ParamField path="DhKem25519" type="0x0020">
+      DH KEM on X25519
+    </ParamField>
+
+    <ParamField path="DhKem448" type="0x0021">
+      DH KEM on X448
+    </ParamField>
+
+    <ParamField path="XWingKemDraft6" type="0x004D">
+      XWing combiner for ML-KEM and X25519
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### HpkeKdfType
+
+<ParamField path="HpkeKdfType" type="enum">
+  HPKE Key Derivation Function types
+
+  <Expandable title="Variants">
+    <ParamField path="HkdfSha256" type="0x0001">
+      HKDF-SHA-256
+    </ParamField>
+
+    <ParamField path="HkdfSha384" type="0x0002">
+      HKDF-SHA-384
+    </ParamField>
+
+    <ParamField path="HkdfSha512" type="0x0003">
+      HKDF-SHA-512
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+### HpkeAeadType
+
+<ParamField path="HpkeAeadType" type="enum">
+  HPKE AEAD types
+
+  <Expandable title="Variants">
+    <ParamField path="AesGcm128" type="0x0001">
+      AES-GCM 128
+    </ParamField>
+
+    <ParamField path="AesGcm256" type="0x0002">
+      AES-GCM 256
+    </ParamField>
+
+    <ParamField path="ChaCha20Poly1305" type="0x0003">
+      ChaCha20-Poly1305
+    </ParamField>
+
+    <ParamField path="Export" type="0xFFFF">
+      Export-only mode
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+## Usage Example
+
+```rust
+use openmls::prelude::*;
+
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+// Get cryptographic components
+let hash_alg = ciphersuite.hash_algorithm();
+let sig_scheme = ciphersuite.signature_algorithm();
+let aead_alg = ciphersuite.aead_algorithm();
+
+// Get algorithm lengths
+let hash_len = ciphersuite.hash_length(); // 32 bytes for SHA-256
+let mac_len = ciphersuite.mac_length();   // 16 bytes for AES-GCM
+
+// Get HPKE configuration
+let hpke_config = ciphersuite.hpke_config();
+```

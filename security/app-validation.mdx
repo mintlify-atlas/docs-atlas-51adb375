@@ -1,0 +1,93 @@
+---
+title: Application validation
+description: Learn about the validation steps applications must perform when using OpenMLS for secure MLS protocol operation
+---
+
+<Warning>
+This page describes the validation steps an application using OpenMLS must perform for safe operation of the MLS protocol. Failure to implement these validations can compromise the security of your application.
+</Warning>
+
+## Credential validation
+
+### Acceptable presented identifiers
+
+The application using MLS is responsible for specifying which identifiers it finds acceptable for each member in a group. Following the model that [RFC6125](https://www.rfc-editor.org/rfc/rfc6125.html) describes for TLS, the application maintains a list of "reference identifiers" for the members of a group, and the credentials provide "presented identifiers".
+
+A member of a group is authenticated by first validating that the member's credential legitimately represents some presented identifiers, and then ensuring that the reference identifiers for the member are authenticated by those presented identifiers.
+
+<Note>
+See [RFC9420, Section 5.3.1](https://www.rfc-editor.org/rfc/rfc9420.html#section-5.3.1-1) for the complete specification.
+</Note>
+
+### Validity of updated presented identifiers
+
+In cases where a member's credential is being replaced, such as the Update and Commit cases, the Authentication Service (AS) must also verify that the set of presented identifiers in the new credential is valid as a successor to the set of presented identifiers in the old credential, according to the application's policy.
+
+<Warning>
+Applications must verify credential succession according to their own security policies when members update their credentials.
+</Warning>
+
+### Application ID is not authenticated by AS
+
+Applications must not rely on the data in an `application_id` extension as if it were authenticated by the Authentication Service, and should gracefully handle cases where the identifier presented is not unique.
+
+<Note>
+See [RFC9420, Section 5.3.3](https://www.rfc-editor.org/rfc/rfc9420.html#section-5.3.3-6) for more details.
+</Note>
+
+## LeafNode validation
+
+### Specifying the maximum total acceptable lifetime
+
+Applications must define a maximum total lifetime that is acceptable for a LeafNode, and reject any LeafNode where the total lifetime is longer than this duration.
+
+<Warning>
+To avoid disagreements about whether a LeafNode has a valid lifetime, the clients in a group should maintain time synchronization (e.g., using the Network Time Protocol [RFC5905](https://www.rfc-editor.org/rfc/rfc5905.html)).
+</Warning>
+
+See [RFC9420, Section 7.2](https://www.rfc-editor.org/rfc/rfc9420.html#section-7.2-10) for the complete specification.
+
+## PrivateMessage validation
+
+### Structure of AAD is application-defined
+
+It is up to the application to decide what authenticated data to provide and how much padding to add to a given message (if any). The overall size of the AAD and ciphertext must fit within the limits established for the group's AEAD algorithm in [CFRG-AEAD-LIMITS](https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-aead-limits-08).
+
+<Note>
+The application must validate whether the AAD adheres to the prescribed format.
+</Note>
+
+See [RFC9420, Section 6.3.1](https://www.rfc-editor.org/rfc/rfc9420.html#section-6.3.1-11) for more details.
+
+## Proposal validation
+
+When processing a commit, the application must ensure that the application-specific semantic checks for the validity of the committed proposals are performed.
+
+This should be done on the `StagedCommit`. Here's an example:
+
+```rust
+// Inspect the staged commit before merging
+let staged_commit = alice_group
+    .process_message(provider, protocol_message)
+    .expect("Could not process message.");
+
+if let ProcessedMessage::StagedCommitMessage(staged_commit) = staged_commit {
+    // Inspect the staged commit
+    println!("Staged commit: {:?}", staged_commit);
+    
+    // Merge the staged commit after validation
+    alice_group
+        .merge_staged_commit(provider, *staged_commit)
+        .expect("Error merging staged commit.");
+}
+```
+
+### External commits
+
+The RFC requires the following check:
+
+<Warning>
+At most one Remove proposal, with which the joiner removes an old version of themselves. If a Remove proposal is present, then the LeafNode in the path field of the external Commit must meet the same criteria as would the LeafNode in an Update for the removed leaf. In particular, the credential in the LeafNode must present a set of identifiers that is acceptable to the application for the removed participant.
+</Warning>
+
+Since OpenMLS does not know the relevant policies, the application must ensure that the credentials are checked according to the policy.

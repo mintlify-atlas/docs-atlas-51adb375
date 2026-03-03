@@ -1,0 +1,375 @@
+---
+title: Processing messages
+description: Receive, decrypt, and validate incoming MLS messages in OpenMLS
+---
+
+Processing incoming messages from the delivery service is a multi-phase operation in OpenMLS. Messages are deserialized, decrypted, validated, and then inspected before being applied to the group state.
+
+## Message processing overview
+
+Processing happens in these phases:
+
+1. **Deserialize** - Convert bytes into `MlsMessageIn`
+2. **Process** - Decrypt and validate the message
+3. **Inspect** - Examine the message content
+4. **Apply** - Merge commits or store proposals
+
+## Deserializing messages
+
+Incoming messages from the delivery service are deserialized into `MlsMessageIn`:
+
+```rust
+use openmls::prelude::*;
+
+let serialized_message: Vec<u8> = delivery_service.receive()?;
+
+let mls_message_in = MlsMessageIn::tls_deserialize(
+    &mut serialized_message.as_slice()
+)?;
+```
+
+If the message is malformed, deserialization will fail with an error.
+
+## Processing messages
+
+Use `process_message()` to decrypt and validate messages:
+
+```rust
+use openmls::prelude::*;
+
+let protocol_message = match mls_message_in.try_into_protocol_message() {
+    Ok(msg) => msg,
+    Err(_) => {
+        // Not a protocol message (might be a Welcome)
+        return Ok(());
+    }
+};
+
+let processed_message = alice_group.process_message(
+    provider,
+    protocol_message,
+)?;
+```
+
+This performs all syntactic and semantic validation checks and verifies the message's signature. If successful, it returns a `ProcessedMessage`.
+
+<Note>
+`MlsMessageIn` can carry all MLS message types, but only `PrivateMessageIn` and `PublicMessageIn` are processed in the context of a group. Welcome messages are handled separately during the join process.
+</Note>
+
+## Interpreting processed messages
+
+The `ProcessedMessage` exposes header fields and content:
+
+```rust
+use openmls::prelude::*;
+
+let group_id = processed_message.group_id();
+let epoch = processed_message.epoch();
+let sender = processed_message.sender();
+let authenticated_data = processed_message.authenticated_data();
+let credential = processed_message.credential();
+
+match processed_message.into_content() {
+    ProcessedMessageContent::ApplicationMessage(app_msg) => {
+        // Handle application message
+    }
+    ProcessedMessageContent::ProposalMessage(proposal) => {
+        // Handle proposal
+    }
+    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+        // Handle commit
+    }
+    ProcessedMessageContent::ExternalJoinProposalMessage(proposal) => {
+        // Handle external join proposal
+    }
+}
+```
+
+## Handling application messages
+
+Application messages contain the plaintext payload:
+
+```rust
+use openmls::prelude::*;
+
+if let ProcessedMessageContent::ApplicationMessage(app_msg) = processed_message.into_content() {
+    let message_bytes = app_msg.into_bytes();
+    let message_text = String::from_utf8(message_bytes)?;
+    
+    println!("Received message: {}", message_text);
+    
+    // Process the message in your application
+    app.handle_message(message_text);
+}
+```
+
+## Handling proposals
+
+Standalone proposals should be stored in the group's proposal store:
+
+```rust
+use openmls::prelude::*;
+
+if let ProcessedMessageContent::ProposalMessage(proposal) = processed_message.into_content() {
+    // Inspect the proposal
+    match proposal.proposal() {
+        Proposal::Add(add_proposal) => {
+            println!("Add proposal received");
+            // Validate the key package
+            let key_package = add_proposal.key_package();
+            validate_key_package(key_package)?;
+        }
+        Proposal::Remove(remove_proposal) => {
+            println!("Remove proposal for index: {}", remove_proposal.removed());
+        }
+        Proposal::Update(update_proposal) => {
+            println!("Update proposal received");
+        }
+        _ => {}
+    }
+    
+    // Store the proposal
+    alice_group.store_pending_proposal(provider.storage(), *proposal)?;
+}
+```
+
+### Rolling back proposals
+
+You can remove proposals from the proposal store if needed:
+
+```rust
+use openmls::prelude::*;
+
+// Store proposal and get reference
+let proposal_ref = alice_group.store_pending_proposal(
+    provider.storage(),
+    proposal,
+)?;
+
+// Later, if validation fails, remove it
+if !is_proposal_valid(&proposal) {
+    alice_group.remove_pending_proposal(
+        provider.storage(),
+        proposal_ref,
+    )?;
+}
+```
+
+## Handling commits
+
+Commit messages are returned as `StagedCommit` objects that must be inspected before merging:
+
+```rust
+use openmls::prelude::*;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = processed_message.into_content() {
+    // Inspect the commit
+    for add_proposal in staged_commit.add_proposals() {
+        println!("Adding member with credential: {:?}", 
+                 add_proposal.add_proposal().key_package().credential());
+        
+        // Validate credentials here
+        validate_credential(add_proposal.add_proposal().key_package().credential())?;
+    }
+    
+    for remove_proposal in staged_commit.remove_proposals() {
+        println!("Removing member at index: {}", 
+                 remove_proposal.remove_proposal().removed());
+    }
+    
+    for update_proposal in staged_commit.update_proposals() {
+        println!("Member updating leaf node");
+    }
+    
+    // Check if we were removed
+    if staged_commit.self_removed() {
+        println!("We were removed from the group");
+    }
+    
+    // Approve and merge the commit
+    alice_group.merge_staged_commit(provider, *staged_commit)?;
+}
+```
+
+<Warning>
+**Always validate credentials before merging commits.** Inspect add and update proposals to ensure all new credentials are trusted. See the [credential validation guide](/user-manual/credential-validation) for details.
+</Warning>
+
+## Staged commit inspection
+
+`StagedCommit` provides methods to inspect different proposal types:
+
+```rust
+use openmls::prelude::*;
+
+// Access proposals by type
+let add_proposals = staged_commit.add_proposals();
+let remove_proposals = staged_commit.remove_proposals();
+let update_proposals = staged_commit.update_proposals();
+let psk_proposals = staged_commit.psk_proposals();
+
+// Check for path updates
+if staged_commit.has_path() {
+    println!("Commit includes a path (key material update)");
+}
+
+// Get the committer's index
+let committer = staged_commit.committer();
+```
+
+## Understanding remove operations
+
+Use `RemoveOperation` to interpret the semantic meaning of removals:
+
+```rust
+use openmls::prelude::*;
+
+for remove_proposal in staged_commit.remove_proposals() {
+    let operation = RemoveOperation::new(
+        remove_proposal.clone(),
+        &alice_group,
+    )?;
+    
+    match operation {
+        RemoveOperation::WeLeft => {
+            println!("We left the group voluntarily");
+        }
+        RemoveOperation::WeWereRemovedBy(sender) => {
+            println!("We were removed by: {:?}", sender);
+        }
+        RemoveOperation::TheyLeft(index) => {
+            println!("Member at index {} left", index);
+        }
+        RemoveOperation::TheyWereRemovedBy((index, sender)) => {
+            println!("Member at index {} was removed by {:?}", index, sender);
+        }
+        RemoveOperation::WeRemovedThem(index) => {
+            println!("We removed member at index {}", index);
+        }
+    }
+}
+```
+
+## Merging commits
+
+After inspection, merge the staged commit to advance the group state:
+
+```rust
+use openmls::prelude::*;
+
+alice_group.merge_staged_commit(
+    provider,
+    staged_commit,
+)?;
+
+println!("Now in epoch: {}", alice_group.epoch());
+```
+
+<Note>
+Merging a commit advances the epoch, clears pending commits, and updates the group's key material. After merging, resumption PSKs are automatically stored for the previous epoch.
+</Note>
+
+## Two-phase message processing
+
+For advanced use cases, you can separate unprotection from verification:
+
+```rust
+use openmls::prelude::*;
+
+// Phase 1: Unprotect (decrypt) the message
+let unverified_message = alice_group.unprotect_message(
+    provider,
+    protocol_message,
+)?;
+
+// Inspect unverified content (use with caution!)
+// ...
+
+// Phase 2: Verify and process
+let processed_message = alice_group.process_unverified_message(
+    provider,
+    unverified_message,
+)?;
+```
+
+<Warning>
+Data from `UnverifiedMessage` is not validated. Only use this for logging or debugging. Always call `process_unverified_message()` to verify before trusting the content.
+</Warning>
+
+## Error handling
+
+Process message errors indicate validation failures:
+
+```rust
+use openmls::prelude::*;
+
+let result = alice_group.process_message(provider, protocol_message);
+
+match result {
+    Ok(processed_message) => {
+        // Handle message
+    }
+    Err(ProcessMessageError::GroupStateError(MlsGroupStateError::UseAfterEviction)) => {
+        println!("Cannot process: we were removed from the group");
+    }
+    Err(ProcessMessageError::IncompatibleWireFormat) => {
+        println!("Message wire format violates group policy");
+    }
+    Err(ProcessMessageError::ValidationError(e)) => {
+        println!("Message failed validation: {:?}", e);
+    }
+    Err(e) => {
+        println!("Error processing message: {:?}", e);
+    }
+}
+```
+
+## Processing external proposals
+
+External proposals from outside parties require special handling:
+
+```rust
+use openmls::prelude::*;
+
+if let ProcessedMessageContent::ProposalMessage(proposal) = processed_message.into_content() {
+    if matches!(processed_message.sender(), Sender::External(_)) {
+        // Validate external sender authorization
+        let external_senders = alice_group
+            .group()
+            .group_context()
+            .extensions()
+            .external_senders()?;
+            
+        // Check if sender is authorized
+        let is_authorized = external_senders
+            .iter()
+            .any(|es| es.credential() == processed_message.credential());
+            
+        if is_authorized {
+            alice_group.store_pending_proposal(provider.storage(), *proposal)?;
+        } else {
+            println!("Unauthorized external sender");
+        }
+    }
+}
+```
+
+## Related types
+
+- `MlsGroup::process_message()` - Main processing function
+- `ProcessedMessage` - Validated message with metadata
+- `ProcessedMessageContent` - Enum of message content types
+- `StagedCommit` - Commit ready for inspection and merging
+- `QueuedProposal` - Proposal stored in proposal store
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Credential validation" href="./credential-validation">
+    Learn how to validate member credentials
+  </Card>
+  <Card title="Key updates" href="./key-updates">
+    Update your encryption keys for forward secrecy
+  </Card>
+</CardGroup>

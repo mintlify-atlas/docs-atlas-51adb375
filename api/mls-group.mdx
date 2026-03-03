@@ -1,0 +1,598 @@
+---
+title: MlsGroup
+description: Core API for managing MLS groups with high-level operations
+---
+
+`MlsGroup` represents an MLS group with a high-level API for managing group membership, sending messages, and handling commits. This is the primary interface for interacting with MLS groups in OpenMLS.
+
+## Overview
+
+The `MlsGroup` struct provides a complete interface to the Delivery Service, where functions that modify the public state return messages that can be sent directly to the Delivery Service. Incoming messages from the Delivery Service can be processed through `process_message()`.
+
+## Creating a group
+
+### new
+
+Creates a new group with a random group ID and the creator as the only member.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider for cryptographic operations and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for creating signatures
+</ParamField>
+
+<ParamField path="mls_group_create_config" type="&MlsGroupCreateConfig">
+  Configuration for group creation
+</ParamField>
+
+<ParamField path="credential_with_key" type="CredentialWithKey">
+  The creator's credential with associated key material
+</ParamField>
+
+<ResponseField name="Result" type="Result<MlsGroup, NewGroupError>">
+  Returns a new `MlsGroup` instance or an error if group creation fails
+</ResponseField>
+
+```rust
+let group = MlsGroup::new(
+    provider,
+    signer,
+    &mls_group_create_config,
+    credential_with_key,
+)?;
+```
+
+### new_with_group_id
+
+Creates a new group with a specified group ID.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider for cryptographic operations and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for creating signatures
+</ParamField>
+
+<ParamField path="mls_group_create_config" type="&MlsGroupCreateConfig">
+  Configuration for group creation
+</ParamField>
+
+<ParamField path="group_id" type="GroupId">
+  The desired group ID
+</ParamField>
+
+<ParamField path="credential_with_key" type="CredentialWithKey">
+  The creator's credential with associated key material
+</ParamField>
+
+<ResponseField name="Result" type="Result<MlsGroup, NewGroupError>">
+  Returns a new `MlsGroup` instance or an error
+</ResponseField>
+
+```rust
+let group = MlsGroup::new_with_group_id(
+    provider,
+    signer,
+    &mls_group_create_config,
+    group_id,
+    credential_with_key,
+)?;
+```
+
+## Group membership
+
+### add_members
+
+Adds members to the group by providing their key packages. This operation includes an update path (updating the committer's leaf).
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider for cryptographic operations and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for creating the commit
+</ParamField>
+
+<ParamField path="key_packages" type="&[KeyPackage]">
+  Key packages for the members to add
+</ParamField>
+
+<ResponseField name="Result" type="Result<(MlsMessageOut, MlsMessageOut, Option<GroupInfo>), AddMembersError>">
+  Returns a tuple of (Commit, Welcome, optional GroupInfo) or an error. Returns error if there is a pending commit.
+</ResponseField>
+
+```rust
+let (commit, welcome, group_info) = group.add_members(
+    provider,
+    signer,
+    &[key_package1, key_package2],
+)?;
+```
+
+### add_members_without_update
+
+Adds members without forcing an update of the committer's leaf. Only includes a path if required by pending proposals.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for creating the commit
+</ParamField>
+
+<ParamField path="key_packages" type="&[KeyPackage]">
+  Key packages for the members to add
+</ParamField>
+
+<ResponseField name="Result" type="Result<(MlsMessageOut, MlsMessageOut, Option<GroupInfo>), AddMembersError>">
+  Returns (Commit, Welcome, optional GroupInfo)
+</ResponseField>
+
+### remove_members
+
+Removes members from the group by their leaf indices.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for creating the commit
+</ParamField>
+
+<ParamField path="members" type="&[LeafNodeIndex]">
+  Leaf indices of members to remove
+</ParamField>
+
+<ResponseField name="Result" type="Result<(MlsMessageOut, Option<MlsMessageOut>, Option<GroupInfo>), RemoveMembersError>">
+  Returns (Commit, optional Welcome if add proposals were pending, optional GroupInfo)
+</ResponseField>
+
+```rust
+let (commit, welcome, group_info) = group.remove_members(
+    provider,
+    signer,
+    &[leaf_index],
+)?;
+```
+
+### leave_group
+
+Leaves the group by creating a Remove proposal. The proposal must be committed by another member.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for the proposal
+</ParamField>
+
+<ResponseField name="Result" type="Result<MlsMessageOut, LeaveGroupError>">
+  Returns the Remove proposal message
+</ResponseField>
+
+```rust
+let remove_proposal = group.leave_group(provider, signer)?;
+```
+
+### members
+
+Returns an iterator over all members in the group.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = Member>">
+  Iterator over group members
+</ResponseField>
+
+```rust
+for member in group.members() {
+    println!("Member: {:?}", member.credential);
+}
+```
+
+## Message processing
+
+### process_message
+
+Processes incoming messages from the Delivery Service. Performs syntactic and semantic validation, and decrypts encrypted messages.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="message" type="impl Into<ProtocolMessage>">
+  The message to process
+</ParamField>
+
+<ResponseField name="Result" type="Result<ProcessedMessage, ProcessMessageError>">
+  Returns the processed message or an error
+</ResponseField>
+
+```rust
+let processed = group.process_message(provider, protocol_message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::ApplicationMessage(msg) => {
+        // Handle application message
+    }
+    ProcessedMessageContent::ProposalMessage(proposal) => {
+        // Store proposal
+        group.store_pending_proposal(provider.storage(), *proposal)?;
+    }
+    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+        // Inspect and merge commit
+        group.merge_staged_commit(provider, *staged_commit)?;
+    }
+    _ => {}
+}
+```
+
+### merge_staged_commit
+
+Merges a staged commit into the group state after inspection.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="staged_commit" type="StagedCommit">
+  The staged commit to merge
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), MergeCommitError>">
+  Returns `()` on success
+</ResponseField>
+
+## Proposals
+
+### propose_add_member
+
+Creates a proposal to add a member to the group.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for the proposal
+</ParamField>
+
+<ParamField path="key_package" type="&KeyPackage">
+  Key package of the member to add
+</ParamField>
+
+<ResponseField name="Result" type="Result<(MlsMessageOut, ProposalRef), ProposeAddMemberError>">
+  Returns (proposal message, proposal reference)
+</ResponseField>
+
+```rust
+let (proposal, proposal_ref) = group.propose_add_member(
+    provider,
+    signer,
+    &key_package,
+)?;
+```
+
+### propose_remove_member
+
+Creates a proposal to remove a member from the group.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for the proposal
+</ParamField>
+
+<ParamField path="member" type="LeafNodeIndex">
+  Leaf index of the member to remove
+</ParamField>
+
+<ResponseField name="Result" type="Result<(MlsMessageOut, ProposalRef), ProposeRemoveMemberError>">
+  Returns (proposal message, proposal reference)
+</ResponseField>
+
+### commit_to_pending_proposals
+
+Creates a Commit that covers all pending proposals in the group's proposal store.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for the commit
+</ParamField>
+
+<ResponseField name="Result" type="Result<(MlsMessageOut, Option<MlsMessageOut>, Option<GroupInfo>), CommitToPendingProposalsError>">
+  Returns (Commit, optional Welcome, optional GroupInfo). Returns error if there is a pending commit.
+</ResponseField>
+
+```rust
+let (commit, welcome, group_info) = group.commit_to_pending_proposals(
+    provider,
+    signer,
+)?;
+```
+
+## Getters and configuration
+
+### group_id
+
+Returns the group ID.
+
+<ResponseField name="GroupId" type="&GroupId">
+  Reference to the group ID
+</ResponseField>
+
+```rust
+let id = group.group_id();
+```
+
+### epoch
+
+Returns the current epoch.
+
+<ResponseField name="GroupEpoch" type="GroupEpoch">
+  The current group epoch
+</ResponseField>
+
+```rust
+let epoch = group.epoch();
+```
+
+### ciphersuite
+
+Returns the group's ciphersuite.
+
+<ResponseField name="Ciphersuite" type="Ciphersuite">
+  The ciphersuite used by the group
+</ResponseField>
+
+### own_leaf_index
+
+Returns the leaf index of the client in the tree.
+
+<ResponseField name="LeafNodeIndex" type="LeafNodeIndex">
+  The client's leaf index
+</ResponseField>
+
+### is_active
+
+Returns whether the client is still a member of the group.
+
+<ResponseField name="bool" type="bool">
+  `true` if the client is a member, `false` if evicted
+</ResponseField>
+
+```rust
+if group.is_active() {
+    // Process messages
+}
+```
+
+### pending_commit
+
+Returns a reference to the pending commit if one exists.
+
+<ResponseField name="Option" type="Option<&StagedCommit>">
+  Optional reference to the pending commit
+</ResponseField>
+
+### pending_proposals
+
+Returns an iterator over pending proposals.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = &QueuedProposal>">
+  Iterator over queued proposals
+</ResponseField>
+
+```rust
+for proposal in group.pending_proposals() {
+    println!("Proposal: {:?}", proposal.proposal());
+}
+```
+
+### configuration
+
+Returns the group configuration.
+
+<ResponseField name="MlsGroupJoinConfig" type="&MlsGroupJoinConfig">
+  Reference to the group configuration
+</ResponseField>
+
+### set_configuration
+
+Sets the group configuration.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="mls_group_config" type="&MlsGroupJoinConfig">
+  New configuration
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+## Export and secrets
+
+### export_secret
+
+Exports a secret from the current epoch.
+
+<ParamField path="crypto" type="&CryptoProvider">
+  Cryptographic provider
+</ParamField>
+
+<ParamField path="label" type="&str">
+  Label for the exported secret
+</ParamField>
+
+<ParamField path="context" type="&[u8]">
+  Context bytes for the derivation
+</ParamField>
+
+<ParamField path="key_length" type="usize">
+  Desired key length in bytes (max: u16::MAX)
+</ParamField>
+
+<ResponseField name="Result" type="Result<Vec<u8>, ExportSecretError>">
+  Returns the exported secret or an error
+</ResponseField>
+
+```rust
+let secret = group.export_secret(
+    provider.crypto(),
+    "my-app-secret",
+    b"context",
+    32,
+)?;
+```
+
+### export_group_info
+
+Exports a GroupInfo object for this group.
+
+<ParamField path="crypto" type="&CryptoProvider">
+  Cryptographic provider
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer">
+  Signer for signing the GroupInfo
+</ParamField>
+
+<ParamField path="with_ratchet_tree" type="bool">
+  Whether to include the ratchet tree extension
+</ParamField>
+
+<ResponseField name="Result" type="Result<MlsMessageOut, ExportGroupInfoError>">
+  Returns the GroupInfo message
+</ResponseField>
+
+```rust
+let group_info = group.export_group_info(
+    provider.crypto(),
+    signer,
+    true, // include ratchet tree
+)?;
+```
+
+### export_ratchet_tree
+
+Exports the ratchet tree of the group.
+
+<ResponseField name="RatchetTree" type="RatchetTree">
+  The group's ratchet tree
+</ResponseField>
+
+```rust
+let tree = group.export_ratchet_tree();
+```
+
+### epoch_authenticator
+
+Returns the epoch authenticator of the current epoch.
+
+<ResponseField name="EpochAuthenticator" type="&EpochAuthenticator">
+  Reference to the epoch authenticator
+</ResponseField>
+
+### resumption_psk_secret
+
+Returns the resumption PSK secret of the current epoch.
+
+<ResponseField name="ResumptionPskSecret" type="&ResumptionPskSecret">
+  Reference to the resumption PSK secret
+</ResponseField>
+
+## Storage
+
+### load
+
+Loads a group from persistent storage.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ParamField path="group_id" type="&GroupId">
+  ID of the group to load
+</ParamField>
+
+<ResponseField name="Result" type="Result<Option<MlsGroup>, Storage::Error>">
+  Returns the group if found, `None` if not found, or an error
+</ResponseField>
+
+```rust
+if let Some(group) = MlsGroup::load(provider.storage(), &group_id)? {
+    // Use the group
+}
+```
+
+### delete
+
+Removes the group's persisted state from storage.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+```rust
+group.delete(provider.storage())?;
+```
+
+## State management
+
+### clear_pending_commit
+
+Clears any pending commit, setting the group state to operational.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+<Warning>
+Use with caution! Only clear a pending commit if you're certain it won't be used. If the commit is later accepted by the group, this client will lack key material for encryption/decryption.
+</Warning>
+
+### clear_pending_proposals
+
+Clears all pending proposals from the proposal store.
+
+<ParamField path="storage" type="&Storage">
+  Storage provider
+</ParamField>
+
+<ResponseField name="Result" type="Result<(), Storage::Error>">
+  Returns `()` on success
+</ResponseField>
+
+<Warning>
+Once proposals are cleared, it becomes impossible to process a Commit that references them. Use only as a last resort.
+</Warning>
+
+## Group state
+
+The `MlsGroup` maintains an internal state that determines available operations:
+
+- **Operational**: Normal state with full functionality
+- **PendingCommit**: A commit has been created but not yet merged; most operations are restricted
+- **Inactive**: The client has been removed from the group; no operations are available
+
+For more details, see the `MlsGroupState` documentation.

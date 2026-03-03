@@ -1,0 +1,348 @@
+---
+title: Removing Members
+description: Remove members from an MLS group
+---
+
+## Overview
+
+Remove members from a group by specifying their leaf indices. The operation creates a Commit message that existing members must process.
+
+## Removing Members
+
+### Basic Removal
+
+Remove one or more members:
+
+```rust
+use openmls::prelude::*;
+
+let members_to_remove = &[
+    LeafNodeIndex::new(2),
+    LeafNodeIndex::new(5),
+];
+
+let (commit, welcome_option, group_info) = alice_group.remove_members(
+    provider,
+    &signer,
+    members_to_remove,
+)?;
+
+// Send commit to remaining members
+alice_group.merge_pending_commit(provider)?;
+```
+
+### Using CommitBuilder
+
+For more control:
+
+```rust
+let bundle = alice_group
+    .commit_builder()
+    .propose_removals(members_to_remove.iter().cloned())
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+    .stage_commit(provider)?;
+
+let commit = bundle.commit();
+let welcome = bundle.welcome();  // Some if there were pending Add proposals
+```
+
+## Method Signatures
+
+### `remove_members`
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signature key for authenticating the commit
+</ParamField>
+
+<ParamField path="members" type="&[LeafNodeIndex]" required>
+  Leaf indices of members to remove (must not be empty)
+</ParamField>
+
+**Returns:** `Result<(MlsMessageOut, Option<MlsMessageOut>, Option<GroupInfo>), RemoveMembersError>`
+
+The tuple contains:
+- Commit message (send to remaining members)
+- Welcome message (Some if there were pending Add proposals)
+- GroupInfo (Some if `use_ratchet_tree_extension` is enabled)
+
+**Location:** `openmls/src/group/mls_group/membership.rs:186`
+
+## Finding Members to Remove
+
+### By Credential
+
+```rust
+// Find member by their credential
+let member_credential: Credential = /* ... */;
+
+if let Some(leaf_index) = alice_group.member_leaf_index(&member_credential) {
+    alice_group.remove_members(provider, &signer, &[leaf_index])?;
+} else {
+    println!("Member not found in group");
+}
+```
+
+### List All Members
+
+```rust
+// Iterate over all members
+for member in alice_group.members() {
+    println!("Member at index {}: {:?}", 
+             member.index, 
+             member.credential);
+    
+    // Remove if needed
+    if should_remove(&member) {
+        alice_group.remove_members(provider, &signer, &[member.index])?;
+        break;
+    }
+}
+```
+
+### Get Member by Index
+
+```rust
+let leaf_index = LeafNodeIndex::new(3);
+
+if let Some(member) = alice_group.member_at(leaf_index) {
+    println!("Found member: {:?}", member.credential);
+    alice_group.remove_members(provider, &signer, &[leaf_index])?;
+}
+```
+
+## Complete Example
+
+<Steps>
+  <Step title="Identify member to remove">
+    ```rust
+    // Get Bob's leaf index
+    let bob_credential: Credential = /* Bob's credential */;
+    let bob_index = alice_group
+        .member_leaf_index(&bob_credential)
+        .expect("Bob not in group");
+    ```
+  </Step>
+
+  <Step title="Remove the member">
+    ```rust
+    let (commit, welcome, group_info) = alice_group.remove_members(
+        provider,
+        &alice_signer,
+        &[bob_index],
+    )?;
+    ```
+  </Step>
+
+  <Step title="Send commit message">
+    ```rust
+    // Send to all remaining members (including Bob)
+    delivery_service.send_to_group(
+        alice_group.group_id(),
+        commit,
+    )?;
+    
+    // Send welcome if there were pending adds
+    if let Some(welcome_msg) = welcome {
+        delivery_service.send_welcome(welcome_msg)?;
+    }
+    ```
+  </Step>
+
+  <Step title="Merge the commit">
+    ```rust
+    alice_group.merge_pending_commit(provider)?;
+    ```
+  </Step>
+
+  <Step title="Process removal (other members)">
+    ```rust
+    // Bob processes the commit
+    let processed = bob_group.process_message(provider, commit)?;
+    
+    if let ProcessedMessageContent::StagedCommitMessage(staged) = 
+        processed.into_content() 
+    {
+        // Check if we were removed
+        if staged.self_removed() {
+            println!("We were removed from the group");
+            // bob_group is now inactive
+        }
+        
+        bob_group.merge_staged_commit(provider, *staged)?;
+    }
+    ```
+  </Step>
+</Steps>
+
+## Remove Operations
+
+The `RemoveOperation` enum helps classify removal types:
+
+```rust
+use openmls::prelude::*;
+
+// When processing a commit with remove proposals
+for remove in staged_commit.remove_proposals() {
+    let operation = RemoveOperation::new(remove.clone(), &group)?;
+    
+    match operation {
+        RemoveOperation::WeLeft => {
+            println!("We requested to leave and it was committed");
+        }
+        RemoveOperation::WeWereRemovedBy(sender) => {
+            println!("We were removed by: {:?}", sender);
+        }
+        RemoveOperation::TheyLeft(index) => {
+            println!("Member {} left", index);
+        }
+        RemoveOperation::TheyWereRemovedBy((index, sender)) => {
+            println!("Member {} was removed by {:?}", index, sender);
+        }
+        RemoveOperation::WeRemovedThem(index) => {
+            println!("We removed member {}", index);
+        }
+    }
+}
+```
+
+**Location:** `openmls/src/group/mls_group/membership.rs:350`
+
+## Error Handling
+
+```rust
+match alice_group.remove_members(provider, &signer, members) {
+    Ok((commit, welcome, group_info)) => {
+        // Success
+    }
+    Err(RemoveMembersError::EmptyInput(_)) => {
+        // members slice was empty
+    }
+    Err(RemoveMembersError::GroupStateError(state_error)) => {
+        match state_error {
+            MlsGroupStateError::PendingCommit => {
+                // Must merge or clear pending commit first
+            }
+            MlsGroupStateError::UseAfterEviction => {
+                // Can't use group after being removed
+            }
+        }
+    }
+    Err(RemoveMembersError::CreateCommitError(commit_error)) => {
+        // Failed to create commit
+    }
+    Err(e) => eprintln!("Error removing members: {}", e),
+}
+```
+
+## Advanced Usage
+
+### Propose Removal (Two-Step)
+
+Create a Remove proposal without committing:
+
+```rust
+// Step 1: Propose removal
+let (proposal_msg, proposal_ref) = alice_group.propose_remove_member(
+    provider,
+    &signer,
+    member_index,
+)?;
+
+// Send proposal to group
+delivery_service.send_to_group(alice_group.group_id(), proposal_msg)?;
+
+// Step 2: Later, commit pending proposals
+let (commit, welcome, group_info) = alice_group
+    .commit_to_pending_proposals(provider, &signer)?;
+```
+
+### Remove with Additional Proposals
+
+```rust
+// Remove members and update group context in one commit
+let bundle = alice_group
+    .commit_builder()
+    .propose_removals(members_to_remove.iter().cloned())
+    .propose_group_context_extension(/* extension */)
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+    .stage_commit(provider)?;
+```
+
+### External Remove Proposal
+
+Allowed external entities can propose removals:
+
+```rust
+// External sender creates remove proposal
+let external_proposal = /* ExternalProposal */;
+
+// Group members process it
+let processed = alice_group.process_message(provider, external_proposal)?;
+
+if let ProcessedMessageContent::ProposalMessage(proposal) = 
+    processed.into_content()
+{
+    // Store the proposal
+    alice_group.store_pending_proposal(
+        provider.storage(),
+        *proposal,
+    )?;
+    
+    // Later commit it
+    let (commit, _, _) = alice_group
+        .commit_to_pending_proposals(provider, &signer)?;
+}
+```
+
+## Important Notes
+
+<Warning>
+  **Self-Removal**: To remove yourself, use [`leave_group()`](/api/group/leave) instead. It creates a Remove proposal that another member must commit.
+</Warning>
+
+<Info>
+  **Empty Input**: `remove_members()` returns an error if the members slice is empty.
+</Info>
+
+<Info>
+  **Welcome Messages**: The Welcome in the return value is `Some` only if there were pending Add proposals in the proposal store.
+</Info>
+
+<Info>
+  **Removed Member Processing**: Removed members can still process the commit that removes them. After merging, their group becomes inactive.
+</Info>
+
+## Detecting Your Removal
+
+When processing commits, check if you were removed:
+
+```rust
+let processed = group.process_message(provider, message)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = 
+    processed.into_content()
+{
+    if staged_commit.self_removed() {
+        println!("We were removed from the group");
+        
+        // After merging, the group becomes inactive
+        group.merge_staged_commit(provider, *staged_commit)?;
+        
+        assert!(!group.is_active());
+    } else {
+        group.merge_staged_commit(provider, *staged_commit)?;
+    }
+}
+```
+
+## Next Steps
+
+- [Leave the group](/api/group/leave) yourself
+- [Add members](/api/group/add-members) to replace removed members
+- Process and handle incoming remove commits

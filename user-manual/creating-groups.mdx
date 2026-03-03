@@ -1,0 +1,151 @@
+---
+title: Creating groups
+description: Learn how to create a new MLS group in OpenMLS
+---
+
+There are two main ways to create an MLS group in OpenMLS: using `MlsGroup::new()` with a configuration object, or using the builder pattern with `MlsGroup::builder()`. Both approaches give you full control over group parameters and extensions.
+
+## Basic group creation
+
+The simplest way to create a group is with `MlsGroup::new()`, which creates a group with a random group ID:
+
+```rust
+use openmls::prelude::*;
+
+let mls_group_create_config = MlsGroupCreateConfig::default();
+
+let alice_group = MlsGroup::new(
+    provider,
+    &alice_signature_keys,
+    &mls_group_create_config,
+    alice_credential_with_key,
+)?;
+```
+
+<Note>
+Every group is assigned a random group ID during creation. The group ID cannot be changed and remains immutable throughout the group's lifetime. Choosing it randomly helps avoid collisions with other groups in the same system.
+</Note>
+
+## Creating a group with a specific ID
+
+If you already have a group ID (for example, provided by a server), you can create a group with a specific ID:
+
+```rust
+use openmls::prelude::*;
+
+let group_id = GroupId::from_slice(b"my-group-id");
+
+let alice_group = MlsGroup::new_with_group_id(
+    provider,
+    &alice_signature_keys,
+    &mls_group_create_config,
+    group_id,
+    alice_credential_with_key,
+)?;
+```
+
+## Using the builder pattern
+
+The builder pattern offers more flexibility and cleaner syntax for configuring groups:
+
+```rust
+use openmls::prelude::*;
+
+let alice_group = MlsGroup::builder()
+    .padding_size(100)
+    .use_ratchet_tree_extension(true)
+    .sender_ratchet_configuration(SenderRatchetConfiguration::new(
+        10,   // out_of_order_tolerance
+        2000, // maximum_forward_distance
+    ))
+    .build(
+        provider,
+        &alice_signature_keys,
+        alice_credential_with_key,
+    )?;
+```
+
+## Configuring group extensions
+
+The builder provides methods for setting required capabilities and external senders. These settings are stored in the group context as extensions:
+
+```rust
+use openmls::prelude::*;
+
+let external_senders_list = vec![ExternalSender::new(
+    ds_credential_with_key.signature_key.clone(),
+    ds_credential_with_key.credential.clone(),
+)];
+
+let extensions = Extensions::from_vec(vec![
+    Extension::ExternalSenders(external_senders_list)
+])?;
+
+let alice_group = MlsGroup::builder()
+    .with_group_context_extensions(extensions)
+    .build(
+        provider,
+        &alice_signature_keys,
+        alice_credential_with_key,
+    )?;
+```
+
+## Setting up supported extensions
+
+When creating a group, you should define all supported and required extensions. The negotiation mechanism in MLS works by setting an initial list of extensions at group creation time and choosing key packages of new members accordingly.
+
+<Steps>
+
+### Define capabilities in your key package
+
+Set the extensions your client supports in the key package:
+
+```rust
+let capabilities = Capabilities::new(
+    None, // Defaults to the group's protocol version
+    None, // Defaults to the group's ciphersuite
+    Some(&[ExtensionType::Unknown(0xff00)]),
+    None, // Defaults to all basic proposal types
+    Some(&[CredentialType::Basic]),
+);
+
+let key_package = KeyPackage::builder()
+    .build(ciphersuite, provider, signer, credential_with_key)?;
+```
+
+### Create the group with matching configuration
+
+Use the same capabilities when creating the group:
+
+```rust
+let mls_group_create_config = MlsGroupCreateConfig::builder()
+    .capabilities(capabilities)
+    .build();
+
+let alice_group = MlsGroup::new(
+    provider,
+    &alice_signature_keys,
+    &mls_group_create_config,
+    alice_credential_with_key,
+)?;
+```
+
+</Steps>
+
+## Related types
+
+- `MlsGroup::new()` - Creates a group with a random ID
+- `MlsGroup::new_with_group_id()` - Creates a group with a specific ID
+- `MlsGroup::builder()` - Returns an `MlsGroupBuilder` for fluent configuration
+- `MlsGroupCreateConfig` - Configuration object for group creation
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Group configuration" href="./group-configuration">
+    Learn about all available configuration options
+  </Card>
+  <Card title="Adding members" href="./managing-members">
+    Add members to your newly created group
+  </Card>
+</CardGroup>

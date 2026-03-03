@@ -1,0 +1,544 @@
+---
+title: Welcome Messages
+description: API reference for OpenMLS Welcome messages and new member onboarding
+---
+
+Welcome messages are sent to new members when they are added to a group via a commit.
+
+## Overview
+
+A Welcome message contains all the information a new member needs to initialize their group state and join the group.
+
+### Welcome Structure
+
+```c
+// RFC 9420
+struct {
+    CipherSuite cipher_suite;
+    EncryptedGroupSecrets secrets<V>;
+    opaque encrypted_group_info<V>;
+} Welcome;
+```
+
+<ResponseField name="cipher_suite" type="Ciphersuite">
+  The ciphersuite used by the group
+</ResponseField>
+
+<ResponseField name="secrets" type="Vec<EncryptedGroupSecrets>">
+  Encrypted secrets for each new member (one per added KeyPackage)
+</ResponseField>
+
+<ResponseField name="encrypted_group_info" type="VLBytes">
+  Encrypted GroupInfo containing group state
+</ResponseField>
+
+## Creating Welcome Messages
+
+Welcome messages are automatically generated when adding members.
+
+```rust
+use openmls::prelude::*;
+
+// Add members to group
+let (commit, welcome, group_info) = group.add_members(
+    provider,
+    &signer,
+    &[key_package1, key_package2]
+)?;
+
+if let Some(welcome) = welcome {
+    // Welcome generated for new members
+    let bytes = welcome.tls_serialize_detached()?;
+    // Send to new members
+}
+```
+
+<Note>
+  Welcome is `None` if the commit didn't add any members
+</Note>
+
+## EncryptedGroupSecrets
+
+Each new member gets their own encrypted secrets.
+
+```c
+struct {
+    KeyPackageRef new_member;
+    HpkeCiphertext encrypted_group_secrets;
+} EncryptedGroupSecrets;
+```
+
+<ParamField path="new_member" type="KeyPackageRef" required>
+  Hash reference identifying which KeyPackage these secrets are for
+</ParamField>
+
+<ParamField path="encrypted_group_secrets" type="HpkeCiphertext" required>
+  HPKE-encrypted GroupSecrets for this member
+</ParamField>
+
+### Finding Your Secrets
+
+The new member finds their secrets using their KeyPackage hash:
+
+```rust
+impl Welcome {
+    pub(crate) fn find_encrypted_group_secret(
+        &self,
+        hash_ref: HashReference,
+    ) -> Option<&EncryptedGroupSecrets> {
+        self.secrets()
+            .iter()
+            .find(|egs| hash_ref == egs.new_member())
+    }
+}
+```
+
+## GroupSecrets
+
+After decryption, the new member obtains GroupSecrets.
+
+```c
+// RFC 9420
+struct {
+    opaque joiner_secret<V>;
+    optional<PathSecret> path_secret;
+    PreSharedKeyID psks<V>;
+} GroupSecrets;
+```
+
+<ParamField path="joiner_secret" type="JoinerSecret" required>
+  Secret used to initialize the key schedule
+</ParamField>
+
+<ParamField path="path_secret" type="Option<PathSecret>">
+  Path secret if the commit included an update path
+</ParamField>
+
+<ParamField path="psks" type="Vec<PreSharedKeyId>" required>
+  Pre-shared keys injected in this epoch (usually empty)
+</ParamField>
+
+### Decrypting GroupSecrets
+
+```rust
+let group_secrets = GroupSecrets::try_from_ciphertext(
+    &hpke_private_key,
+    &ciphertext,
+    &context,
+    ciphersuite,
+    crypto
+)?;
+```
+
+<ParamField path="hpke_private_key" type="&HpkePrivateKey" required>
+  The new member's HPKE private key from their KeyPackage
+</ParamField>
+
+<ParamField path="ciphertext" type="&HpkeCiphertext" required>
+  The encrypted group secrets from the Welcome
+</ParamField>
+
+<ParamField path="context" type="&[u8]" required>
+  Context bytes (group ID) for HPKE decryption
+</ParamField>
+
+## GroupInfo
+
+The encrypted GroupInfo contains the group state.
+
+```c
+struct {
+    GroupContext group_context;
+    Extension extensions<V>;
+    MAC confirmation_tag;
+    uint32 signer;
+    opaque signature<V>;
+} GroupInfo;
+```
+
+<ResponseField name="group_context" type="GroupContext">
+  Complete group context (group ID, epoch, tree hash, etc.)
+</ResponseField>
+
+<ResponseField name="extensions" type="Extensions<GroupInfo>">
+  GroupInfo-specific extensions (e.g., RatchetTree)
+</ResponseField>
+
+<ResponseField name="confirmation_tag" type="Mac">
+  Confirmation tag from the commit that added this member
+</ResponseField>
+
+<ResponseField name="signer" type="uint32">
+  Leaf index of the member who created this GroupInfo
+</ResponseField>
+
+<ResponseField name="signature" type="Signature">
+  Signature over the GroupInfo
+</ResponseField>
+
+### RatchetTree Extension
+
+GroupInfo typically includes the ratchet tree:
+
+```rust
+use openmls::extensions::*;
+
+// Extract ratchet tree from GroupInfo
+if let Some(tree_ext) = group_info.extensions()
+    .ratchet_tree() 
+{
+    // Ratchet tree is available
+}
+```
+
+<Note>
+  The RatchetTree extension allows new members to reconstruct the group tree without downloading it separately.
+</Note>
+
+## Processing Welcome
+
+New members process Welcome to join the group.
+
+```rust
+use openmls::prelude::*;
+
+// Receive Welcome message
+let message_in = MlsMessageIn::tls_deserialize(&mut bytes.as_slice())?;
+let welcome = message_in.into_welcome()
+    .ok_or("Not a Welcome message")?;
+
+// Join the group using Welcome
+let group_config = MlsGroupJoinConfig::default();
+let mut group = StagedWelcome::new_from_welcome(
+    provider,
+    &group_config,
+    welcome,
+    Some(ratchet_tree), // Optional: provide if not in GroupInfo
+)?;
+
+// Group is ready to use
+println!("Joined group: {:?}", group.group_id());
+println!("Current epoch: {}", group.epoch());
+```
+
+### StagedWelcome
+
+Welcomes are first staged for inspection.
+
+```rust
+pub struct StagedWelcome {
+    // Validated welcome ready to finalize
+}
+```
+
+<ParamField path="into_group()" type="MlsGroup">
+  Consume the staged welcome and create the group
+</ParamField>
+
+## Welcome Validation
+
+Processing a Welcome involves several validation steps:
+
+1. **Find encrypted secrets**: Locate secrets for our KeyPackage
+2. **Decrypt secrets**: Use HPKE private key to decrypt GroupSecrets  
+3. **Decrypt GroupInfo**: Decrypt using joiner secret
+4. **Verify signature**: Validate GroupInfo signature
+5. **Verify confirmation tag**: Ensure group state is correct
+6. **Reconstruct tree**: Build ratchet tree from extension or separate input
+7. **Initialize key schedule**: Derive epoch secrets
+
+```rust
+// OpenMLS handles all validation internally
+let staged = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    ratchet_tree,
+)?; // Returns error if validation fails
+```
+
+## Welcome Errors
+
+### Common Errors
+
+```rust
+pub enum WelcomeError {
+    // Could not find encrypted secrets for our KeyPackage
+    NoMatchingKeyPackage,
+    
+    // HPKE decryption failed
+    DecryptionFailed,
+    
+    // GroupInfo decryption failed  
+    GroupInfoDecryptionFailed,
+    
+    // Signature validation failed
+    InvalidSignature,
+    
+    // Confirmation tag doesn't match
+    InvalidConfirmationTag,
+    
+    // Missing required RatchetTree
+    MissingRatchetTree,
+    
+    // Other errors
+    LibraryError(LibraryError),
+}
+```
+
+## Encryption Details
+
+### GroupSecrets Encryption
+
+GroupSecrets are encrypted using HPKE:
+
+```text
+encrypted_group_secrets = HPKE.Seal(
+    pk = new_member.init_key,
+    label = "Welcome",
+    context = group_id,
+    plaintext = GroupSecrets
+)
+```
+
+<ParamField path="init_key" type="HpkePublicKey">
+  The init_key from the new member's KeyPackage
+</ParamField>
+
+### GroupInfo Encryption
+
+GroupInfo is encrypted using the joiner secret:
+
+```text
+encrypted_group_info = AEAD.Seal(
+    key = welcome_key,
+    nonce = welcome_nonce,  
+    aad = "",
+    plaintext = GroupInfo
+)
+
+welcome_key = DeriveSecret(joiner_secret, "welcome")
+welcome_nonce = DeriveSecret(joiner_secret, "nonce")
+```
+
+## PathSecret
+
+If the commit included an update path, GroupSecrets contains a path secret.
+
+```rust
+pub struct PathSecret {
+    path_secret: Secret,
+}
+```
+
+### Deriving Keys
+
+The new member uses the path secret to derive their encryption keys:
+
+```rust
+impl PathSecret {
+    pub(crate) fn derive_key_pair(
+        &self,
+        crypto: &impl OpenMlsCrypto,
+        ciphersuite: Ciphersuite,
+    ) -> Result<EncryptionKeyPair, LibraryError> {
+        // Derive node secret
+        let node_secret = self.path_secret
+            .kdf_expand_label(crypto, ciphersuite, "node", &[], hash_len)?;
+        
+        // Derive HPKE key pair
+        crypto.derive_hpke_keypair(ciphersuite.hpke_config(), &node_secret)
+    }
+}
+```
+
+## Ratchet Tree Delivery
+
+The ratchet tree can be delivered in two ways:
+
+### 1. RatchetTree Extension
+
+Included in GroupInfo extensions (recommended):
+
+```rust
+// Tree included in GroupInfo
+let staged = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    None, // Tree is in GroupInfo
+)?;
+```
+
+### 2. External Delivery
+
+Provided separately:
+
+```rust
+// Fetch tree externally
+let ratchet_tree = fetch_ratchet_tree();
+
+let staged = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    Some(ratchet_tree),
+)?;
+```
+
+<Note>
+  Using the RatchetTree extension is more convenient and ensures tree authenticity.
+</Note>
+
+## Examples
+
+### Send Welcome
+
+```rust
+use openmls::prelude::*;
+
+// Add members and get Welcome
+let (commit, welcome, _) = group.add_members(
+    provider,
+    &signer,
+    &[alice_kp, bob_kp]
+)?;
+
+if let Some(welcome) = welcome {
+    // Serialize Welcome
+    let welcome_bytes = welcome.tls_serialize_detached()?;
+    
+    // Send to new members
+    send_to_alice(welcome_bytes.clone());
+    send_to_bob(welcome_bytes);
+}
+
+// Send commit to existing members
+let commit_bytes = commit.tls_serialize_detached()?;
+send_to_group(commit_bytes);
+```
+
+### Process Welcome
+
+```rust
+use openmls::prelude::*;
+
+// Receive Welcome bytes
+let welcome_bytes = receive_welcome();
+
+// Deserialize
+let message_in = MlsMessageIn::tls_deserialize(
+    &mut welcome_bytes.as_slice()
+)?;
+
+let welcome = match message_in.extract() {
+    MlsMessageBodyIn::Welcome(w) => w,
+    _ => return Err("Expected Welcome"),
+};
+
+// Join group
+let config = MlsGroupJoinConfig::builder()
+    .build();
+    
+let mut group = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    None, // Tree in GroupInfo
+)?.into_group(provider)?;
+
+println!("Successfully joined group {}", group.group_id());
+println!("Members: {}", group.members().count());
+```
+
+### With External Tree
+
+```rust
+// Group created without RatchetTree extension
+let group_config = MlsGroupCreateConfig::builder()
+    .with_group_context_extensions(
+        Extensions::empty() // No RatchetTree extension
+    )?
+    .build();
+
+let mut group = MlsGroup::new(
+    provider,
+    &signer,
+    &group_config,
+    credential_with_key,
+)?;
+
+// Add member (GroupInfo won't include tree)
+let (commit, welcome, _) = group.add_members(
+    provider,
+    &signer,
+    &[key_package]
+)?;
+
+// New member must get tree separately
+let ratchet_tree = export_ratchet_tree(&group);
+
+// Send both to new member
+send_welcome_and_tree(welcome, ratchet_tree);
+
+// New member processes
+let group = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    Some(ratchet_tree), // Required
+)?.into_group(provider)?;
+```
+
+### Inspect Before Joining
+
+```rust
+let staged = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    None,
+)?;
+
+// Inspect group info before joining
+let group_info = staged.group_info();
+println!("Group ID: {:?}", group_info.group_context().group_id());
+println!("Epoch: {}", group_info.group_context().epoch());
+println!("Ciphersuite: {:?}", group_info.group_context().ciphersuite());
+
+// Decide whether to join
+if should_join(group_info) {
+    let group = staged.into_group(provider)?;
+    // Joined
+} else {
+    // Reject welcome
+}
+```
+
+## Security Considerations
+
+### Forward Secrecy
+
+Welcome messages provide forward secrecy:
+- Init keys are single-use (from KeyPackage)
+- GroupSecrets are ephemeral  
+- Compromising current state doesn't compromise past Welcomes
+
+### Authentication
+
+Welcome authenticity is ensured through:
+- GroupInfo signature (proves it came from group member)
+- Confirmation tag (proves correct group state)
+- HPKE authenticated encryption
+
+### Replay Protection
+
+KeyPackages should be single-use:
+- Each KeyPackage used once
+- Prevents Welcome replay attacks
+- Hash reference ensures correct secrets
+
+## Related Types
+
+- [Commits](/api/messages/commits) - Generate Welcome messages when adding members
+- [Message Framing](/api/messages/framing) - MlsMessageIn/Out wrapper

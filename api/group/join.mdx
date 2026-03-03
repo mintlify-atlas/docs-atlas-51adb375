@@ -1,0 +1,334 @@
+---
+title: Joining MLS Groups
+description: Join existing MLS groups via Welcome message or External Commit
+---
+
+## Overview
+
+There are two ways to join an existing MLS group:
+
+1. **Welcome Message** - Join when invited by an existing member
+2. **External Commit** - Join without an invitation (if group allows)
+
+## Joining via Welcome
+
+### Basic Join
+
+Join a group using a Welcome message:
+
+```rust
+use openmls::prelude::*;
+
+// Receive Welcome from delivery service
+let welcome: Welcome = /* ... */;
+let ratchet_tree = /* optional ratchet tree */;
+
+let staged_welcome = StagedWelcome::new_from_welcome(
+    provider,
+    &mls_group_join_config,
+    welcome,
+    ratchet_tree,
+)?;
+
+let mls_group = staged_welcome.into_group(provider)?;
+```
+
+### Using the Builder
+
+For advanced inspection before joining:
+
+```rust
+let join_builder = StagedWelcome::build_from_welcome(
+    provider,
+    &mls_group_join_config,
+    welcome,
+)?;
+
+// Inspect the Welcome before accepting
+let processed_welcome = join_builder.processed_welcome();
+let group_info = processed_welcome.unverified_group_info();
+println!("Group ID: {:?}", group_info.group_id());
+
+// Build the staged welcome
+let staged_welcome = join_builder
+    .with_ratchet_tree(ratchet_tree)
+    .skip_lifetime_validation()
+    .build()?;
+
+let mls_group = staged_welcome.into_group(provider)?;
+```
+
+## Joining via External Commit
+
+### Basic External Commit
+
+Join a group without an invitation:
+
+```rust
+let verifiable_group_info: VerifiableGroupInfo = /* from group */;
+let ratchet_tree: RatchetTreeIn = /* group's ratchet tree */;
+
+let (mls_group, commit_message, group_info) = 
+    MlsGroup::external_commit_builder()
+        .with_ratchet_tree(ratchet_tree)
+        .with_config(mls_group_join_config)
+        .build_group(provider, verifiable_group_info, credential_with_key)?
+        .load_psks(provider.storage())?
+        .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+        .finalize(provider)?;
+
+// Send commit_message to the group
+// The group is ready to use immediately (with pending commit)
+```
+
+### Advanced External Commit
+
+With SelfRemove proposals and custom configuration:
+
+```rust
+let proposals: Vec<PublicMessageIn> = /* SelfRemove proposals */;
+
+let (mls_group, commit_message, group_info) = 
+    MlsGroup::external_commit_builder()
+        .with_proposals(proposals)  // Include SelfRemove proposals
+        .with_ratchet_tree(ratchet_tree)
+        .with_config(mls_group_join_config)
+        .with_aad(b"additional data".to_vec())
+        .skip_lifetime_validation()
+        .build_group(provider, verifiable_group_info, credential_with_key)?
+        .leaf_node_parameters(
+            LeafNodeParameters::builder()
+                .with_capabilities(capabilities)
+                .build()
+        )
+        .load_psks(provider.storage())?
+        .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+        .finalize(provider)?;
+```
+
+## Method Signatures
+
+### `StagedWelcome::new_from_welcome`
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="mls_group_config" type="&MlsGroupJoinConfig" required>
+  Configuration for joining the group
+</ParamField>
+
+<ParamField path="welcome" type="Welcome" required>
+  Welcome message received from the group
+</ParamField>
+
+<ParamField path="ratchet_tree" type="Option<RatchetTreeIn>">
+  Ratchet tree (required if not in Welcome)
+</ParamField>
+
+**Returns:** `Result<StagedWelcome, WelcomeError>`
+
+**Location:** `openmls/src/group/mls_group/creation.rs:474`
+
+### `StagedWelcome::into_group`
+
+Converts a staged welcome into an active MlsGroup.
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+**Returns:** `Result<MlsGroup, WelcomeError>`
+
+**Location:** `openmls/src/group/mls_group/creation.rs:539`
+
+### `ExternalCommitBuilder::build_group`
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="verifiable_group_info" type="VerifiableGroupInfo" required>
+  Group information for the target group
+</ParamField>
+
+<ParamField path="credential_with_key" type="CredentialWithKey" required>
+  Your credential and public key
+</ParamField>
+
+**Returns:** `Result<CommitBuilder, ExternalCommitBuilderError>`
+
+**Location:** `openmls/src/group/mls_group/commit_builder/external_commits.rs:136`
+
+## Welcome Builder Options
+
+<ParamField path="with_ratchet_tree" type="RatchetTreeIn">
+  Set the ratchet tree (required if not in Welcome extensions)
+</ParamField>
+
+<ParamField path="skip_lifetime_validation" type="bool">
+  Skip validation of leaf node lifetimes
+</ParamField>
+
+<ParamField path="replace_old_group" type="bool">
+  Replace existing group with same ID
+</ParamField>
+
+## External Commit Builder Options
+
+<ParamField path="with_proposals" type="Vec<PublicMessageIn>">
+  Include SelfRemove proposals from other members
+</ParamField>
+
+<ParamField path="with_ratchet_tree" type="RatchetTreeIn">
+  Set the ratchet tree (required if not in GroupInfo)
+</ParamField>
+
+<ParamField path="with_config" type="MlsGroupJoinConfig">
+  Set the group configuration
+</ParamField>
+
+<ParamField path="with_aad" type="Vec<u8>">
+  Set additional authenticated data
+</ParamField>
+
+<ParamField path="skip_lifetime_validation" type="bool">
+  Skip leaf node lifetime validation
+</ParamField>
+
+## Complete Examples
+
+### Joining via Welcome
+
+<Steps>
+  <Step title="Receive Welcome message">
+    ```rust
+    // Receive from delivery service
+    let mls_message_in: MlsMessageIn = /* from DS */;
+    let welcome = mls_message_in.into_welcome()?;
+    ```
+  </Step>
+
+  <Step title="Get ratchet tree">
+    ```rust
+    // Either from Welcome extensions or separately
+    let ratchet_tree = Some(/* ratchet tree */);
+    ```
+  </Step>
+
+  <Step title="Stage the welcome">
+    ```rust
+    let staged_welcome = StagedWelcome::new_from_welcome(
+        provider,
+        &mls_group_join_config,
+        welcome,
+        ratchet_tree,
+    )?;
+    ```
+  </Step>
+
+  <Step title="Inspect and join">
+    ```rust
+    // Optionally inspect
+    let sender = staged_welcome.welcome_sender()?;
+    println!("Welcome from: {:?}", sender.credential());
+
+    // Join the group
+    let mut bob_group = staged_welcome.into_group(provider)?;
+    ```
+  </Step>
+</Steps>
+
+### External Commit Join
+
+<Steps>
+  <Step title="Obtain group information">
+    ```rust
+    let verifiable_group_info: VerifiableGroupInfo = /* from group */;
+    let ratchet_tree: RatchetTreeIn = /* from group */;
+    ```
+  </Step>
+
+  <Step title="Build the external commit">
+    ```rust
+    let commit_builder = MlsGroup::external_commit_builder()
+        .with_ratchet_tree(ratchet_tree)
+        .with_config(mls_group_join_config)
+        .build_group(provider, verifiable_group_info, credential_with_key)?;
+    ```
+  </Step>
+
+  <Step title="Complete and finalize">
+    ```rust
+    let (mut group, commit, group_info) = commit_builder
+        .load_psks(provider.storage())?
+        .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+        .finalize(provider)?;
+    ```
+  </Step>
+
+  <Step title="Send commit to group">
+    ```rust
+    // Send commit message to delivery service
+    // Group members will process it to add you
+    
+    // Your group has a pending commit
+    assert!(group.pending_commit().is_some());
+    ```
+  </Step>
+</Steps>
+
+## Error Handling
+
+### Welcome Errors
+
+```rust
+match StagedWelcome::new_from_welcome(provider, config, welcome, tree) {
+    Ok(staged) => { /* success */ }
+    Err(WelcomeError::NoMatchingKeyPackage) => {
+        // Welcome not for any of our key packages
+    }
+    Err(WelcomeError::MissingRatchetTree) => {
+        // Ratchet tree required but not provided
+    }
+    Err(WelcomeError::GroupAlreadyExists) => {
+        // Group ID already in storage
+    }
+    Err(e) => eprintln!("Error: {}", e),
+}
+```
+
+### External Commit Errors
+
+```rust
+match external_commit_builder.build_group(provider, info, cred) {
+    Ok(builder) => { /* continue */ }
+    Err(ExternalCommitBuilderError::MissingRatchetTree) => {
+        // Ratchet tree required
+    }
+    Err(ExternalCommitBuilderError::MissingExternalPub) => {
+        // Group doesn't allow external commits
+    }
+    Err(e) => eprintln!("Error: {}", e),
+}
+```
+
+## Important Notes
+
+<Warning>
+  **External Commits**: The resulting MlsGroup starts with a pending commit. You must merge this commit for the group to function properly. The commit cannot be cleared - if rejected, discard the group and create a new external commit.
+</Warning>
+
+<Info>
+  **Ratchet Tree**: Either the Welcome message must include the ratchet tree extension, or you must provide it separately via `with_ratchet_tree()`.
+</Info>
+
+<Info>
+  **Key Package Consumption**: Joining via Welcome consumes the KeyPackage from storage (unless it has the last_resort extension).
+</Info>
+
+## Next Steps
+
+- [Update your key material](/api/group/update)
+- [Add new members](/api/group/add-members)
+- [Leave the group](/api/group/leave)

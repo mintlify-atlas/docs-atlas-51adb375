@@ -1,0 +1,336 @@
+---
+title: Adding Members
+description: Add new members to an MLS group
+---
+
+## Overview
+
+Add new members to a group by providing their KeyPackages. The operation creates a Commit message and Welcome message for the new members.
+
+## Adding Members
+
+### Basic Add
+
+Add members with a path (updates your key material):
+
+```rust
+use openmls::prelude::*;
+
+let key_packages: &[KeyPackage] = &[bob_key_package, charlie_key_package];
+
+let (commit, welcome, group_info) = alice_group.add_members(
+    provider,
+    &signer,
+    key_packages,
+)?;
+
+// Send commit to existing members
+// Send welcome to new members
+
+alice_group.merge_pending_commit(provider)?;
+```
+
+### Add Without Update
+
+Add members without forcing a path:
+
+```rust
+let (commit, welcome, group_info) = alice_group.add_members_without_update(
+    provider,
+    &signer,
+    key_packages,
+)?;
+
+alice_group.merge_pending_commit(provider)?;
+```
+
+### Using CommitBuilder
+
+For more control over the commit:
+
+```rust
+let bundle = alice_group
+    .commit_builder()
+    .propose_adds(key_packages.iter().cloned())
+    .force_self_update(true)
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+    .stage_commit(provider)?;
+
+let commit = bundle.commit();
+let welcome = bundle.welcome().expect("expected welcome");
+let group_info = bundle.group_info();
+```
+
+## Method Signatures
+
+### `add_members`
+
+Adds members with a commit path (includes key material update).
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signature key for authenticating the commit
+</ParamField>
+
+<ParamField path="key_packages" type="&[KeyPackage]" required>
+  KeyPackages of members to add (must not be empty)
+</ParamField>
+
+**Returns:** `Result<(MlsMessageOut, MlsMessageOut, Option<GroupInfo>), AddMembersError>`
+
+The tuple contains:
+- Commit message (send to existing members)
+- Welcome message (send to new members)
+- GroupInfo (Some if `use_ratchet_tree_extension` is enabled)
+
+**Location:** `openmls/src/group/mls_group/membership.rs:41`
+
+### `add_members_without_update`
+
+Adds members without forcing a path. A path is only included if pending proposals require it.
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signature key for authenticating the commit
+</ParamField>
+
+<ParamField path="key_packages" type="&[KeyPackage]" required>
+  KeyPackages of members to add
+</ParamField>
+
+**Returns:** `Result<(MlsMessageOut, MlsMessageOut, Option<GroupInfo>), AddMembersError>`
+
+**Location:** `openmls/src/group/mls_group/membership.rs:118`
+
+### `swap_members`
+
+Replaces existing members with new members atomically.
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Signature key for authenticating the commit
+</ParamField>
+
+<ParamField path="members" type="&[LeafNodeIndex]" required>
+  Indices of members to remove
+</ParamField>
+
+<ParamField path="key_packages" type="&[KeyPackage]" required>
+  KeyPackages of replacement members (must be same length)
+</ParamField>
+
+**Returns:** `Result<WelcomeCommitMessages, SwapMembersError>`
+
+**Location:** `openmls/src/group/mls_group/membership.rs:63`
+
+## Complete Example
+
+<Steps>
+  <Step title="Obtain KeyPackages">
+    ```rust
+    // Get KeyPackages from new members
+    // (they generate and publish these)
+    let bob_key_package: KeyPackage = /* from Bob */;
+    let charlie_key_package: KeyPackage = /* from Charlie */;
+    ```
+  </Step>
+
+  <Step title="Add members to group">
+    ```rust
+    let (commit_msg, welcome_msg, group_info_option) = 
+        alice_group.add_members(
+            provider,
+            &alice_signer,
+            &[bob_key_package, charlie_key_package],
+        )?;
+    ```
+  </Step>
+
+  <Step title="Send messages">
+    ```rust
+    // Send commit to existing group members
+    delivery_service.send_to_group(alice_group.group_id(), commit_msg)?;
+
+    // Send welcome to new members (Bob and Charlie)
+    delivery_service.send_welcome(welcome_msg)?;
+    
+    // Optionally send group_info
+    if let Some(group_info) = group_info_option {
+        delivery_service.publish_group_info(group_info)?;
+    }
+    ```
+  </Step>
+
+  <Step title="Merge the commit">
+    ```rust
+    // Alice merges her own pending commit
+    alice_group.merge_pending_commit(provider)?;
+    ```
+  </Step>
+
+  <Step title="New members join">
+    ```rust
+    // Bob receives and processes the Welcome
+    let bob_group = StagedWelcome::new_from_welcome(
+        provider,
+        &join_config,
+        welcome_msg.into_welcome()?,
+        ratchet_tree,
+    )?
+    .into_group(provider)?;
+    ```
+  </Step>
+</Steps>
+
+## Swap Members Example
+
+```rust
+// Replace members at indices 2 and 3 with new members
+let old_member_indices = &[
+    LeafNodeIndex::new(2),
+    LeafNodeIndex::new(3),
+];
+
+let new_key_packages = &[
+    new_member_1_kp,
+    new_member_2_kp,
+];
+
+let messages = alice_group.swap_members(
+    provider,
+    &signer,
+    old_member_indices,
+    new_key_packages,
+)?;
+
+let commit = messages.commit();
+let welcome = messages.welcome();
+
+// Send messages and merge
+alice_group.merge_pending_commit(provider)?;
+```
+
+## Error Handling
+
+```rust
+match alice_group.add_members(provider, &signer, key_packages) {
+    Ok((commit, welcome, group_info)) => {
+        // Success - send messages
+    }
+    Err(AddMembersError::EmptyInput(_)) => {
+        // key_packages slice was empty
+    }
+    Err(AddMembersError::GroupStateError(state_error)) => {
+        match state_error {
+            MlsGroupStateError::PendingCommit => {
+                // Must merge or clear pending commit first
+            }
+            MlsGroupStateError::UseAfterEviction => {
+                // Can't use group after being removed
+            }
+        }
+    }
+    Err(AddMembersError::CreateCommitError(commit_error)) => {
+        // Failed to create the commit
+    }
+    Err(e) => eprintln!("Error adding members: {}", e),
+}
+```
+
+## Advanced Usage
+
+### Custom Proposal Filtering
+
+Control which proposals to include:
+
+```rust
+let bundle = alice_group
+    .commit_builder()
+    .propose_adds(key_packages.iter().cloned())
+    .consume_proposal_store(true)  // Include pending proposals
+    .load_psks(provider.storage())?
+    .build(
+        provider.rand(),
+        provider.crypto(),
+        &signer,
+        |proposal| {
+            // Custom filter: only accept Add and Update proposals
+            matches!(
+                proposal.proposal(),
+                Proposal::Add(_) | Proposal::Update(_)
+            )
+        },
+    )?
+    .stage_commit(provider)?;
+```
+
+### Add with Group Context Extensions
+
+```rust
+let bundle = alice_group
+    .commit_builder()
+    .propose_adds(key_packages.iter().cloned())
+    .propose_group_context_extension(
+        Extension::RequiredCapabilities(
+            RequiredCapabilitiesExtension::new(&[/* ... */])
+        )
+    )
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), &signer, |_| true)?
+    .stage_commit(provider)?;
+```
+
+## Important Notes
+
+<Warning>
+  **Pending Commits**: You cannot add members if there's already a pending commit. Merge or clear it first.
+</Warning>
+
+<Info>
+  **Welcome Messages**: New members need the Welcome message to join. Without it, they cannot decrypt group messages.
+</Info>
+
+<Info>
+  **Path vs No Path**: `add_members()` always includes a path (updating your leaf). `add_members_without_update()` only includes a path if required by other pending proposals.
+</Info>
+
+<Info>
+  **Empty Input**: Both methods return an error if the `key_packages` slice is empty.
+</Info>
+
+## Processing Add Commits
+
+Existing members receive and process the commit:
+
+```rust
+// Bob processes Alice's add commit
+let processed = bob_group.process_message(provider, commit_msg)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged_commit) =
+    processed.into_content()
+{
+    // Inspect the commit
+    for add in staged_commit.add_proposals() {
+        println!("New member added");
+    }
+    
+    // Merge the commit
+    bob_group.merge_staged_commit(provider, *staged_commit)?;
+}
+```
+
+## Next Steps
+
+- [Remove members](/api/group/remove-members) from the group
+- [Update your key material](/api/group/update)
+- Process incoming commits from other members

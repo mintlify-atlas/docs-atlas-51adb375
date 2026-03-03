@@ -1,0 +1,390 @@
+---
+title: StagedWelcome
+description: Inspect and validate Welcome messages before joining a group
+---
+
+`StagedWelcome` allows inspection of a Welcome message before creating an `MlsGroup`. This enables validation of the group's members, context, and sender before committing to join.
+
+## Overview
+
+When joining a group via a Welcome message, `StagedWelcome` provides an intermediate state where you can:
+
+- Inspect the group's current members
+- Check the group context and extensions
+- Identify who sent the Welcome
+- Export secrets before fully joining
+- Convert to an `MlsGroup` when ready
+
+## Creating a staged welcome
+
+### new_from_welcome
+
+Creates a `StagedWelcome` from a Welcome message and optional ratchet tree.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider for cryptographic operations and storage
+</ParamField>
+
+<ParamField path="mls_group_config" type="&MlsGroupJoinConfig">
+  Configuration for joining the group
+</ParamField>
+
+<ParamField path="welcome" type="Welcome">
+  The Welcome message to process
+</ParamField>
+
+<ParamField path="ratchet_tree" type="Option<RatchetTreeIn>">
+  Optional ratchet tree. Required if not included in the Welcome's ratchet tree extension.
+</ParamField>
+
+<ResponseField name="Result" type="Result<StagedWelcome, WelcomeError>">
+  Returns a staged welcome for inspection or an error if processing fails
+</ResponseField>
+
+```rust
+let staged_welcome = StagedWelcome::new_from_welcome(
+    provider,
+    &mls_group_config,
+    welcome,
+    Some(ratchet_tree),
+)?;
+
+// Inspect before joining
+for member in staged_welcome.members() {
+    println!("Member: {:?}", member.credential);
+}
+
+// Join when ready
+let group = staged_welcome.into_group(provider)?;
+```
+
+<Note>
+This function consumes the key material for decrypting the Welcome message. Even if you don't convert to an `MlsGroup`, the key package will be consumed.
+</Note>
+
+### build_from_welcome
+
+Creates a builder for more advanced Welcome processing.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider
+</ParamField>
+
+<ParamField path="mls_group_config" type="&MlsGroupJoinConfig">
+  Configuration for joining
+</ParamField>
+
+<ParamField path="welcome" type="Welcome">
+  The Welcome message
+</ParamField>
+
+<ResponseField name="Result" type="Result<JoinBuilder, WelcomeError>">
+  Returns a builder for customizing the join process
+</ResponseField>
+
+```rust
+let staged_welcome = StagedWelcome::build_from_welcome(provider, &config, welcome)?
+    .with_ratchet_tree(ratchet_tree)
+    .skip_lifetime_validation()
+    .build()?;
+```
+
+## Inspecting the welcome
+
+### welcome_sender
+
+Returns the leaf node of the member who sent the Welcome.
+
+<ResponseField name="Result" type="Result<&LeafNode, LibraryError>">
+  Reference to the sender's leaf node
+</ResponseField>
+
+```rust
+let sender = staged_welcome.welcome_sender()?;
+println!("Welcome from: {:?}", sender.credential());
+```
+
+### welcome_sender_index
+
+Returns the leaf index of the Welcome sender.
+
+<ResponseField name="LeafNodeIndex" type="LeafNodeIndex">
+  The sender's leaf index in the tree
+</ResponseField>
+
+```rust
+let sender_index = staged_welcome.welcome_sender_index();
+```
+
+### group_context
+
+Returns the group context from the Welcome.
+
+<ResponseField name="GroupContext" type="&GroupContext">
+  Reference to the group context containing epoch, group ID, extensions, etc.
+</ResponseField>
+
+```rust
+let context = staged_welcome.group_context();
+println!("Group ID: {:?}", context.group_id());
+println!("Epoch: {}", context.epoch().as_u64());
+println!("Ciphersuite: {:?}", context.ciphersuite());
+```
+
+### members
+
+Returns an iterator over all current members of the group.
+
+<ResponseField name="Iterator" type="impl Iterator<Item = Member>">
+  Iterator over group members
+</ResponseField>
+
+```rust
+for member in staged_welcome.members() {
+    println!("Member {}: {:?}", 
+        member.index.u32(), 
+        member.credential
+    );
+}
+```
+
+## Converting to a group
+
+### into_group
+
+Consumes the `StagedWelcome` and creates an `MlsGroup`.
+
+<ParamField path="provider" type="&Provider">
+  OpenMLS provider for storage and crypto operations
+</ParamField>
+
+<ResponseField name="Result" type="Result<MlsGroup, WelcomeError>">
+  Returns the fully initialized `MlsGroup`
+</ResponseField>
+
+```rust
+let group = staged_welcome.into_group(provider)?;
+
+// Group is now ready for normal operations
+let (commit, welcome, group_info) = group.add_members(
+    provider,
+    signer,
+    &[key_package],
+)?;
+```
+
+This operation:
+- Stores the group state to persistent storage
+- Stores encryption keypairs
+- Initializes the message secrets
+- Sets up the resumption PSK store
+
+## Export secrets
+
+### export_secret
+
+Exports a secret from the epoch that will be joined.
+
+<ParamField path="crypto" type="&CryptoProvider">
+  Cryptographic provider
+</ParamField>
+
+<ParamField path="label" type="&str">
+  Label for the exported secret
+</ParamField>
+
+<ParamField path="context" type="&[u8]">
+  Context bytes for derivation
+</ParamField>
+
+<ParamField path="key_length" type="usize">
+  Desired key length in bytes (max: u16::MAX)
+</ParamField>
+
+<ResponseField name="Result" type="Result<Vec<u8>, ExportSecretError>">
+  Returns the exported secret or an error if the key length is too long
+</ResponseField>
+
+```rust
+let secret = staged_welcome.export_secret(
+    provider.crypto(),
+    "my-app-secret",
+    b"context",
+    32,
+)?;
+```
+
+<Note>
+Secrets can be exported before converting to an `MlsGroup`. This is useful for deriving application-level keys tied to the group epoch.
+</Note>
+
+## Validation workflow
+
+Typical workflow for validating a Welcome before joining:
+
+```rust
+// 1. Stage the welcome
+let staged_welcome = StagedWelcome::new_from_welcome(
+    provider,
+    &config,
+    welcome,
+    ratchet_tree,
+)?;
+
+// 2. Validate the sender
+let sender = staged_welcome.welcome_sender()?;
+if !is_trusted_sender(sender.credential()) {
+    return Err("Untrusted Welcome sender");
+}
+
+// 3. Check group properties
+let context = staged_welcome.group_context();
+if !is_allowed_group(context.group_id()) {
+    return Err("Not allowed to join this group");
+}
+
+// 4. Inspect members
+let member_count = staged_welcome.members().count();
+if member_count > MAX_GROUP_SIZE {
+    return Err("Group too large");
+}
+
+// 5. Verify all members
+for member in staged_welcome.members() {
+    if !is_valid_member(&member.credential) {
+        return Err("Invalid member in group");
+    }
+}
+
+// 6. Export any needed secrets
+let app_secret = staged_welcome.export_secret(
+    provider.crypto(),
+    "app-level-key",
+    b"",
+    32,
+)?;
+
+// 7. Join the group
+let group = staged_welcome.into_group(provider)?;
+```
+
+## Builder pattern
+
+For advanced use cases, use the builder pattern:
+
+```rust
+let staged_welcome = StagedWelcome::build_from_welcome(
+    provider,
+    &config,
+    welcome,
+)?
+.with_ratchet_tree(ratchet_tree)      // Provide ratchet tree
+.skip_lifetime_validation()            // Skip leaf lifetime checks
+.replace_old_group()                   // Replace existing group with same ID
+.build()?;
+```
+
+### Builder methods
+
+#### with_ratchet_tree
+
+Provides the ratchet tree for group initialization.
+
+<ParamField path="ratchet_tree" type="RatchetTreeIn">
+  The ratchet tree to use
+</ParamField>
+
+#### skip_lifetime_validation
+
+Skips validation of leaf node lifetimes in the ratchet tree. Only leaf nodes that have never been updated have a lifetime.
+
+#### replace_old_group
+
+Allows replacing an existing group with the same group ID. By default, attempting to join a group that already exists in storage returns an error.
+
+#### processed_welcome
+
+Returns a reference to the `ProcessedWelcome` for inspection before building.
+
+<ResponseField name="ProcessedWelcome" type="&ProcessedWelcome">
+  Reference to the processed welcome containing unverified values
+</ResponseField>
+
+## Error handling
+
+`StagedWelcome` creation can fail for several reasons:
+
+```rust
+match StagedWelcome::new_from_welcome(provider, &config, welcome, ratchet_tree) {
+    Ok(staged) => { /* Success */ },
+    Err(WelcomeError::NoMatchingKeyPackage) => {
+        // No key package found for this Welcome
+    },
+    Err(WelcomeError::MissingRatchetTree) => {
+        // Ratchet tree required but not provided
+    },
+    Err(WelcomeError::ConfirmationTagMismatch) => {
+        // Welcome failed validation
+    },
+    Err(WelcomeError::GroupAlreadyExists) => {
+        // Group with this ID already exists in storage
+    },
+    Err(e) => {
+        // Other errors
+    }
+}
+```
+
+## Use cases
+
+### Conditional group joining
+
+```rust
+let staged_welcome = StagedWelcome::new_from_welcome(
+    provider, &config, welcome, ratchet_tree
+)?;
+
+// Only join if sender is authorized
+if authorized_senders.contains(staged_welcome.welcome_sender()?.credential()) {
+    let group = staged_welcome.into_group(provider)?;
+} else {
+    log::warn!("Rejected Welcome from unauthorized sender");
+}
+```
+
+### Group metadata collection
+
+```rust
+let staged_welcome = StagedWelcome::new_from_welcome(
+    provider, &config, welcome, ratchet_tree
+)?;
+
+let metadata = GroupMetadata {
+    group_id: staged_welcome.group_context().group_id().clone(),
+    member_count: staged_welcome.members().count(),
+    epoch: staged_welcome.group_context().epoch().as_u64(),
+    sender: staged_welcome.welcome_sender()?.credential().clone(),
+};
+
+store_metadata(metadata);
+let group = staged_welcome.into_group(provider)?;
+```
+
+### Pre-join key derivation
+
+```rust
+let staged_welcome = StagedWelcome::new_from_welcome(
+    provider, &config, welcome, ratchet_tree
+)?;
+
+// Derive application keys before joining
+let encryption_key = staged_welcome.export_secret(
+    provider.crypto(), "app-encryption", b"", 32
+)?;
+let signing_key = staged_welcome.export_secret(
+    provider.crypto(), "app-signing", b"", 64
+)?;
+
+// Join and use derived keys
+let group = staged_welcome.into_group(provider)?;
+```

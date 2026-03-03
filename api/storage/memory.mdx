@@ -1,0 +1,287 @@
+---
+title: Memory Storage
+description: In-memory storage provider for OpenMLS
+---
+
+The `MemoryStorage` provider implements the `StorageProvider` trait using an in-memory hash map. This is the simplest storage option, ideal for testing and development.
+
+## Overview
+
+Memory storage keeps all data in RAM using a thread-safe `RwLock<HashMap<Vec<u8>, Vec<u8>>>`. Data is lost when the application terminates.
+
+## Installation
+
+Add the memory storage crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+openmls_memory_storage = "0.2"
+openmls_traits = "0.2"
+```
+
+## Basic Usage
+
+```rust
+use openmls_memory_storage::MemoryStorage;
+use openmls_traits::storage::StorageProvider;
+
+// Create a new memory storage instance
+let storage = MemoryStorage::default();
+
+// Use with OpenMLS operations
+storage.write_key_package(&hash_ref, &key_package)?;
+let key_package = storage.key_package(&hash_ref)?;
+```
+
+## Features
+
+### Thread Safety
+
+Memory storage is thread-safe and can be shared across threads:
+
+```rust
+use std::sync::Arc;
+
+let storage = Arc::new(MemoryStorage::default());
+// Clone the Arc to share across threads
+let storage_clone = storage.clone();
+```
+
+### Serialization (Test Utils)
+
+With the `test-utils` feature, you can serialize and deserialize storage:
+
+```toml
+openmls_memory_storage = { version = "0.2", features = ["test-utils"] }
+```
+
+```rust
+use openmls_memory_storage::MemoryStorage;
+
+let storage = MemoryStorage::default();
+
+// Serialize to bytes
+let mut buffer = Vec::new();
+storage.serialize(&mut buffer)?;
+
+// Deserialize from bytes
+let mut cursor = std::io::Cursor::new(buffer);
+let restored = MemoryStorage::deserialize(&mut cursor)?;
+```
+
+### Persistence
+
+With the `persistence` feature, you can save and load storage from disk:
+
+```toml
+openmls_memory_storage = { version = "0.2", features = ["persistence"] }
+```
+
+```rust
+use openmls_memory_storage::MemoryStorage;
+use openmls_memory_storage::persistence::*;
+
+// Save storage to file
+let storage = MemoryStorage::default();
+storage.save_to_file("storage.bin")?;
+
+// Load storage from file
+let loaded = MemoryStorage::load_from_file("storage.bin")?;
+```
+
+## Storage Operations
+
+Memory storage implements all required storage operations:
+
+### Key Packages
+
+```rust
+// Write key package
+storage.write_key_package(&hash_ref, &key_package)?;
+
+// Read key package
+let key_package = storage.key_package(&hash_ref)?;
+
+// Delete key package
+storage.delete_key_package(&hash_ref)?;
+```
+
+### Group Data
+
+```rust
+// Write group state
+storage.write_group_state(&group_id, &group_state)?;
+
+// Read group state
+let state = storage.group_state(&group_id)?;
+
+// Delete group state
+storage.delete_group_state(&group_id)?;
+```
+
+### Proposals
+
+```rust
+// Queue a proposal
+storage.queue_proposal(&group_id, &proposal_ref, &proposal)?;
+
+// Get all proposal refs for a group
+let refs = storage.queued_proposal_refs(&group_id)?;
+
+// Get all proposals for a group
+let proposals = storage.queued_proposals(&group_id)?;
+
+// Remove a specific proposal
+storage.remove_proposal(&group_id, &proposal_ref)?;
+
+// Clear all proposals for a group
+storage.clear_proposal_queue(&group_id)?;
+```
+
+### Encryption Keys
+
+```rust
+// Write encryption key pair
+storage.write_encryption_key_pair(&public_key, &key_pair)?;
+
+// Read encryption key pair
+let key_pair = storage.encryption_key_pair(&public_key)?;
+
+// Delete encryption key pair
+storage.delete_encryption_key_pair(&public_key)?;
+```
+
+### Signature Keys
+
+```rust
+// Write signature key pair
+storage.write_signature_key_pair(&public_key, &key_pair)?;
+
+// Read signature key pair
+let key_pair = storage.signature_key_pair(&public_key)?;
+
+// Delete signature key pair
+storage.delete_signature_key_pair(&public_key)?;
+```
+
+## Error Handling
+
+Memory storage uses the `MemoryStorageError` enum:
+
+```rust
+use openmls_memory_storage::MemoryStorageError;
+
+match storage.key_package(&hash_ref) {
+    Ok(Some(kp)) => println!("Found key package"),
+    Ok(None) => println!("Key package not found"),
+    Err(MemoryStorageError::SerializationError) => {
+        println!("Failed to deserialize data")
+    },
+    Err(e) => println!("Error: {}", e),
+}
+```
+
+### Error Types
+
+<ParamField path="SerializationError" type="error">
+  Error serializing or deserializing values
+</ParamField>
+
+<ParamField path="UnsupportedValueTypeBytes" type="error">
+  The storage does not support raw byte values
+</ParamField>
+
+<ParamField path="UnsupportedMethod" type="error">
+  The requested operation is not supported
+</ParamField>
+
+## Implementation Details
+
+### Internal Storage Format
+
+Data is stored with versioned keys:
+
+```
+key = label + serialized_data + version_bytes
+```
+
+- **label**: Operation type (e.g., "KeyPackage", "Tree", "GroupState")
+- **serialized_data**: JSON-serialized key data
+- **version_bytes**: Storage version (u16, big-endian)
+
+### Serialization Format
+
+Values are serialized using `serde_json`. All stored types must implement `Serialize` and `Deserialize`.
+
+## Use Cases
+
+### Testing
+
+Memory storage is perfect for unit tests:
+
+```rust
+#[test]
+fn test_group_operations() {
+    let storage = MemoryStorage::default();
+    // Test operations...
+}
+```
+
+### Development
+
+Quick prototyping without database setup:
+
+```rust
+fn main() {
+    let storage = MemoryStorage::default();
+    let provider = OpenMlsRustCrypto::new_with_storage(storage);
+    // Development code...
+}
+```
+
+### Short-lived Sessions
+
+Applications that don't need persistence:
+
+```rust
+// Session-based chat application
+let session_storage = MemoryStorage::default();
+```
+
+## Limitations
+
+<Warning>
+  Memory storage should not be used in production for long-running applications:
+  
+  - Data is lost when the process terminates
+  - Memory usage grows unbounded without manual cleanup
+  - Not suitable for distributed systems
+  - No transaction support
+</Warning>
+
+## Migration from Memory Storage
+
+When moving to production, migrate to SQLite or custom storage:
+
+```rust
+use openmls_memory_storage::MemoryStorage;
+use openmls_sqlite_storage::SqliteStorageProvider;
+
+// Development: Memory storage
+#[cfg(debug_assertions)]
+let storage = MemoryStorage::default();
+
+// Production: SQLite storage
+#[cfg(not(debug_assertions))]
+let storage = {
+    let conn = rusqlite::Connection::open("openmls.db")?;
+    let mut storage = SqliteStorageProvider::new(conn);
+    storage.run_migrations()?;
+    storage
+};
+```
+
+## Related
+
+- [SQLite Storage](/api/storage/sqlite) - Persistent storage using SQLite
+- [Custom Storage](/api/storage/custom) - Implement your own storage provider

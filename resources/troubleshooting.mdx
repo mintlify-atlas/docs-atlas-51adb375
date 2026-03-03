@@ -1,0 +1,722 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for OpenMLS
+---
+
+# Troubleshooting
+
+Solutions to common problems encountered when using OpenMLS.
+
+## Message Processing Errors
+
+### UnableToDecrypt Errors
+
+**Symptom:** Messages fail to decrypt with `MessageDecryptionError::AeadError` or `UnableToDecrypt`.
+
+**Common Causes:**
+
+<AccordionGroup>
+  <Accordion title="Messages processed out of order">
+    **Problem:** Application messages must be processed after the commit that created their epoch.
+    
+    **Solution:**
+    ```rust
+    // Sort messages by epoch before processing
+    let mut messages = get_pending_messages();
+    messages.sort_by_key(|m| {
+        match m {
+            ProtocolMessage::PublicMessage(pm) => pm.epoch(),
+            ProtocolMessage::PrivateMessage(pm) => pm.epoch(),
+        }
+    });
+    
+    for message in messages {
+        group.process_message(&provider, message)?;
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Missed commits">
+    **Problem:** Group state is behind because commits were not processed.
+    
+    **Solution:**
+    ```rust
+    // Request all messages since last known epoch
+    let current_epoch = group.epoch();
+    let missing = fetch_messages_since_epoch(current_epoch);
+    
+    // Process all commits in order
+    for message in missing {
+        match group.process_message(&provider, message) {
+            Ok(ProcessedMessage::StagedCommitMessage(staged)) => {
+                group.merge_staged_commit(&provider, *staged)?;
+            },
+            Err(e) => eprintln!("Error: {:?}", e),
+            _ => {}
+        }
+    }
+    ```
+    
+    <Note>
+      Implement a message ordering and queuing system in your application to prevent missed commits.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Secret tree not persisted correctly">
+    **Problem:** Secret tree state was not saved after processing messages.
+    
+    **Solution:**
+    Ensure your storage provider properly persists the secret tree:
+    
+    ```rust
+    impl StorageProvider for MyStorage {
+        fn write_secret_tree<V: Entity>(
+            &self,
+            key: &[u8],
+            value: &V,
+        ) -> Result<(), Self::Error> {
+            // Must actually persist to storage
+            self.save(key, value)?;
+            // Don't just store in memory cache
+            Ok(())
+        }
+    }
+    ```
+    
+    <Warning>
+      Version 0.7.1+ fixes a bug where secret trees weren't persisted correctly. Update to the latest version.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Attempting to decrypt own messages">
+    **Problem:** Trying to decrypt messages you sent.
+    
+    **Solution:**
+    ```rust
+    match group.process_message(&provider, message) {
+        Err(ProcessMessageError::ValidationError(
+            ValidationError::CannotDecryptOwnMessage
+        )) => {
+            // This is your own message - skip it
+            continue;
+        },
+        Ok(msg) => {
+            // Process message from others
+        },
+        Err(e) => return Err(e),
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Message too old (SecretTreeError::TooDistantInThePast)">
+    **Problem:** Message is from too many generations in the past.
+    
+    **Solution:**
+    ```rust
+    match group.process_message(&provider, message) {
+        Err(ProcessMessageError::ValidationError(
+            ValidationError::UnableToDecrypt(
+                MessageDecryptionError::SecretTree(
+                    SecretTreeError::TooDistantInThePast
+                )
+            )
+        )) => {
+            // Message is too old - request resend
+            request_message_resend(message.sender())?;
+        },
+        _ => {}
+    }
+    ```
+    
+    **Prevention:** Process messages promptly and maintain synchronized state.
+  </Accordion>
+</AccordionGroup>
+
+### WrongEpoch Errors
+
+**Symptom:** `ValidationError::WrongEpoch` when processing messages.
+
+**Cause:** Message is for a different epoch than the group's current state.
+
+**Solutions:**
+
+```rust
+match group.process_message(&provider, message) {
+    Err(ProcessMessageError::ValidationError(
+        ValidationError::WrongEpoch
+    )) => {
+        let msg_epoch = get_message_epoch(&message);
+        let group_epoch = group.epoch();
+        
+        if msg_epoch > group_epoch {
+            // Message from future epoch - need to process intervening commits
+            let missing = fetch_commits(group_epoch, msg_epoch);
+            for commit in missing {
+                process_commit(&mut group, commit)?;
+            }
+            // Retry original message
+            group.process_message(&provider, message)?;
+        } else {
+            // Message from past epoch - already processed
+            // Ignore or request fresh message
+        }
+    },
+    _ => {}
+}
+```
+
+---
+
+## Group Creation and Joining
+
+### Group Already Exists
+
+**Symptom:** Error when creating a group: group with same ID already exists.
+
+**Cause:** OpenMLS 0.8.0+ prevents accidentally overwriting existing groups.
+
+**Solutions:**
+
+```rust
+// Option 1: Delete old group first
+provider.storage().delete_group(&group_id)?;
+let group = MlsGroup::new(/* ... */)?;
+
+// Option 2: Use replace_old_group flag
+let group = MlsGroupBuilder::new()
+    .with_group_id(group_id)
+    .replace_old_group(true) // Explicitly replace
+    .build(&provider, &signer, credential_with_key)?;
+
+// Option 3: Generate unique group ID
+let group_id = GroupId::random(&provider.rand())?;
+let group = MlsGroup::new(
+    &provider,
+    &signer,
+    &mls_group_config,
+    credential_with_key,
+)?;
+```
+
+### KeyPackage Encryption Keys Not Found
+
+**Symptom:** Cannot join group - encryption keypair missing.
+
+**Cause:** KeyPackage was deleted or used in another group without `LastResortExtension`.
+
+**Solutions:**
+
+```rust
+// For reusable KeyPackages, add LastResortExtension
+let key_package = KeyPackage::builder()
+    .leaf_node_extensions(Extensions::single(
+        Extension::LastResort,
+    ))
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+
+// Otherwise, generate fresh KeyPackage for each group
+let key_package = KeyPackage::builder()
+    .build(
+        ciphersuite,
+        &provider,
+        &signer,
+        credential_with_key,
+    )?;
+// Upload to server
+// After joining, KeyPackage is consumed
+```
+
+<Warning>
+  A KeyPackage without `LastResortExtension` can only be used to join ONE group.
+</Warning>
+
+### Lifetime Validation Failures
+
+**Symptom:** KeyPackages or leaf nodes rejected due to lifetime validation.
+
+**Cause:** `not_before` or `not_after` times are invalid.
+
+**Solutions:**
+
+```rust
+// Set reasonable lifetimes when creating KeyPackages
+use std::time::{SystemTime, Duration};
+
+let now = SystemTime::now()
+    .duration_since(SystemTime::UNIX_EPOCH)?
+    .as_secs();
+
+let not_before = now - 60; // 1 minute ago for clock skew
+let not_after = now + (90 * 24 * 60 * 60); // 90 days
+
+let key_package = KeyPackage::builder()
+    .lifetime(Lifetime::new(not_before, not_after))
+    .build(/* ... */)?;
+
+// Disable validation when joining (use with caution)
+let staged = StagedWelcome::build_from_welcome(
+    &provider,
+    mls_group_config,
+    welcome,
+    None,
+)
+.with_disable_lifetime_validation(true)
+.build()?;
+```
+
+---
+
+## Commit and Proposal Issues
+
+### Commit Conflicts
+
+**Symptom:** Commit fails because another commit was processed first.
+
+**Solution:** Implement retry logic:
+
+```rust
+const MAX_RETRIES: usize = 3;
+
+for attempt in 0..MAX_RETRIES {
+    // Create commit
+    let (commit, welcome, _) = group.add_members(
+        &provider,
+        &signer,
+        &key_packages,
+    )?;
+    
+    // Try to send
+    match send_commit_to_group(&commit) {
+        Ok(_) => break,
+        Err(ConflictError) => {
+            // Another commit won - clear ours and retry
+            group.clear_pending_commit(&provider.storage())?;
+            
+            // Process the winning commit
+            let winning_commit = fetch_latest_commit()?;
+            group.process_message(&provider, winning_commit)?;
+            
+            if attempt == MAX_RETRIES - 1 {
+                return Err("Too many commit conflicts");
+            }
+            // Loop will retry
+        }
+    }
+}
+```
+
+### Duplicate PSK Proposals
+
+**Symptom:** Commit processing fails with duplicate PSK proposal error.
+
+**Cause:** OpenMLS 0.8.0+ rejects commits containing duplicate PSK proposals.
+
+**Solution:**
+
+```rust
+// Remove duplicates before committing
+let mut psk_ids = HashSet::new();
+let unique_psks: Vec<_> = psk_proposals
+    .into_iter()
+    .filter(|psk| psk_ids.insert(psk.psk_id().clone()))
+    .collect();
+
+// Use CommitBuilder with unique PSKs
+let (commit, _, _) = group.commit_builder()
+    .add_psks(unique_psks)
+    .build(&provider, &signer)?;
+```
+
+### Proposal Validation Failures
+
+**Symptom:** Proposals rejected during validation.
+
+**Common issues:**
+
+```rust
+// Issue: Removed member doesn't support proposal types
+// Fixed in 0.8.0+ - no longer required
+
+// Issue: Missing capability support
+let capabilities = Capabilities::builder()
+    .add_proposal_type(ProposalType::Remove)
+    .add_proposal_type(ProposalType::Add)
+    .add_extension_type(ExtensionType::ApplicationId)
+    .build();
+
+let key_package = KeyPackage::builder()
+    .leaf_node_capabilities(capabilities)
+    .build(/* ... */)?;
+```
+
+---
+
+## Storage and Persistence
+
+### Storage Errors During Message Processing
+
+**Symptom:** `ProcessMessageError::StorageError` when processing commits.
+
+**Cause:** Storage provider failures are now properly reported (0.7.0+).
+
+**Solution:**
+
+```rust
+impl StorageProvider for MyStorage {
+    fn read<V: Entity>(&self, key: &[u8]) -> Result<Option<V>, Self::Error> {
+        // Properly handle all error cases
+        match self.inner_read(key) {
+            Ok(value) => Ok(Some(value)),
+            Err(NotFoundError) => Ok(None), // Not found is not an error
+            Err(e) => Err(e), // Other errors should propagate
+        }
+    }
+}
+```
+
+### Group State Forks
+
+**Symptom:** Different group members have diverged states.
+
+**Solution:** Use fork resolution (requires `fork-resolution` feature):
+
+```rust
+#[cfg(feature = "fork-resolution")]
+{
+    use openmls::group::fork_resolution::*;
+    
+    // Detect fork
+    let fork_detector = ForkDetector::new(&group, &provider)?;
+    
+    if fork_detector.has_fork() {
+        // Resolve fork by syncing with other members
+        let resolution = fork_detector.resolve(
+            &provider,
+            &other_member_states,
+        )?;
+        
+        // Apply resolution
+        group.apply_fork_resolution(&provider, resolution)?;
+    }
+}
+```
+
+### Credential Lookup Failures
+
+**Symptom:** Cannot validate messages from past epochs.
+
+**Cause:** Credentials not properly stored for historical validation.
+
+**Solution:**
+
+```rust
+// Ensure credentials are stored when processing commits
+if let ProcessedMessage::StagedCommitMessage(staged) = processed {
+    // Store credentials for new members
+    for add_proposal in staged.add_proposals() {
+        let credential = add_proposal.key_package().credential();
+        store_credential(credential)?;
+    }
+    
+    group.merge_staged_commit(&provider, *staged)?;
+}
+```
+
+---
+
+## Cryptographic Provider Issues
+
+### WASM Compilation Errors
+
+**Symptom:** Errors when compiling to WebAssembly.
+
+**Solution:**
+
+```toml
+# Cargo.toml
+[dependencies]
+openmls = { version = "0.8", features = ["js"] }
+openmls_rust_crypto = { version = "0.3", features = ["js"] }
+# Or for libcrux provider
+openmls_libcrux_crypto = { version = "0.3", features = ["js"] }
+
+# Update getrandom for WASM
+getrandom = { version = "0.3.4", features = ["js"] }
+```
+
+```rust
+// Initialize provider for WASM
+#[cfg(target_arch = "wasm32")]
+let provider = OpenMlsRustCrypto::default();
+```
+
+### Libcrux Security Updates
+
+**Symptom:** Security advisories for libcrux or hpke-rs.
+
+**Solution:**
+
+```toml
+# Update to OpenMLS 0.8.1+ which includes security fixes
+[dependencies]
+openmls = "0.8.1"
+openmls_libcrux_crypto = "0.3.1"
+```
+
+<Warning>
+  OpenMLS 0.8.1 includes critical security updates for libcrux and rust_crypto providers. Upgrade immediately if using older versions.
+</Warning>
+
+### Random Number Generation Failures
+
+**Symptom:** `OpenMlsRand` operations fail.
+
+**Solution:**
+
+```rust
+// Ensure platform supports random number generation
+use openmls_traits::random::OpenMlsRand;
+
+#[derive(Default)]
+struct MyRandProvider;
+
+impl OpenMlsRand for MyRandProvider {
+    type Error = std::io::Error;
+    
+    fn random_bytes(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
+        use rand::RngCore;
+        let mut bytes = vec![0u8; len];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        Ok(bytes)
+    }
+}
+```
+
+---
+
+## Signature and Validation
+
+### Invalid Signature Errors
+
+**Symptom:** `ValidationError::InvalidSignature` when processing messages.
+
+**Causes and solutions:**
+
+```rust
+// Cause 1: Wrong signing key
+// Ensure you're using the correct signer for the credential
+let signer = SignatureKeyPair::read(
+    &provider.crypto(),
+    credential.signature_key(),
+    ciphersuite.signature_algorithm(),
+)?;
+
+// Cause 2: Credential doesn't match key
+let credential_with_key = CredentialWithKey {
+    credential: credential.clone(),
+    signature_key: signer.public().into(),
+};
+// Verify they match
+assert_eq!(
+    credential_with_key.signature_key,
+    signer.public()
+);
+
+// Cause 3: Credential validation failed
+// Check your credential validation logic
+fn validate_credential(credential: &Credential) -> Result<(), Error> {
+    match credential {
+        Credential::Basic(_) => {
+            // Validate basic credential
+            Ok(())
+        },
+        Credential::X509(cert_chain) => {
+            // Validate certificate chain
+            verify_certificate_chain(cert_chain)?;
+            Ok(())
+        },
+        _ => Err(Error::UnsupportedCredential),
+    }
+}
+```
+
+### Leaf Node Validation Failures
+
+**Symptom:** Leaf nodes rejected during validation.
+
+**Solution:**
+
+```rust
+// Ensure correct extensions in leaf node
+let allowed_extensions = vec![
+    ExtensionType::ApplicationId,
+    ExtensionType::LastResort,
+    // Only certain extensions valid in leaf nodes
+];
+
+let leaf_extensions = Extensions::from_vec(
+    allowed_extensions
+        .into_iter()
+        .map(|et| create_extension(et))
+        .collect()
+)?;
+
+let key_package = KeyPackage::builder()
+    .leaf_node_extensions(leaf_extensions)
+    .build(/* ... */)?;
+```
+
+---
+
+## Performance Issues
+
+### Slow Group Operations in Large Groups
+
+**Symptom:** Operations take too long with many members.
+
+**Optimization strategies:**
+
+```rust
+// 1. Batch member additions
+let key_packages: Vec<KeyPackage> = /* multiple packages */;
+let (commit, welcome, _) = group.add_members(
+    &provider,
+    &signer,
+    &key_packages, // Add many at once
+)?;
+
+// 2. Use add-only commits when possible
+let (commit, welcome, _) = group.add_members_without_update(
+    &provider,
+    &signer,
+    &key_packages,
+)?;
+
+// 3. Disable ratchet tree extension in Welcome (smaller messages)
+let config = MlsGroupCreateConfig::builder()
+    .use_ratchet_tree_extension(false)
+    .build();
+
+// 4. Use efficient storage backend
+// SQLite is faster than in-memory for large groups
+use openmls_sqlite_storage::SqliteStorage;
+let storage = SqliteStorage::new("path/to/db")?;
+```
+
+### High Memory Usage
+
+**Symptom:** Excessive memory consumption.
+
+**Solutions:**
+
+```rust
+// 1. Clear old proposals regularly
+group.clear_pending_proposals();
+
+// 2. Don't keep multiple epochs in memory
+// Process and merge commits immediately
+if let ProcessedMessage::StagedCommitMessage(staged) = msg {
+    group.merge_staged_commit(&provider, *staged)?;
+    // Staged commit is dropped, freeing memory
+}
+
+// 3. Use storage-backed provider instead of memory
+// Don't use MemoryStorage for production
+```
+
+---
+
+## Debugging Tips
+
+### Enable Detailed Logging
+
+```rust
+use tracing_subscriber;
+
+tracing_subscriber::fmt()
+    .with_max_level(tracing::Level::TRACE)
+    .with_target(true)
+    .with_thread_ids(true)
+    .init();
+```
+
+### Inspect Message Contents
+
+```rust
+use openmls::prelude::*;
+
+// Deserialize and inspect
+let msg = ProtocolMessage::tls_deserialize(&mut bytes.as_slice())?;
+
+match msg {
+    ProtocolMessage::PublicMessage(pm) => {
+        println!("Epoch: {}", pm.epoch());
+        println!("Content type: {:?}", pm.content_type());
+        println!("Sender: {:?}", pm.sender());
+    },
+    ProtocolMessage::PrivateMessage(pm) => {
+        println!("Epoch: {}", pm.epoch());
+        println!("Content type: {:?}", pm.content_type());
+    }
+}
+```
+
+### Verify Group State
+
+```rust
+// Check current state
+println!("Group ID: {:?}", group.group_id());
+println!("Epoch: {}", group.epoch());
+println!("Members: {}", group.members().count());
+println!("Pending proposals: {}", group.pending_proposals().count());
+
+// Export group for debugging
+let exported = group.export_secret(
+    &provider.crypto(),
+    "debug",
+    &[],
+    32,
+)?;
+println!("Group secret (debug only): {:x?}", exported);
+```
+
+### Test with Known Good Messages
+
+```rust
+#[test]
+fn test_message_processing() {
+    // Load test fixture
+    let test_message = include_bytes!("fixtures/valid_commit.bin");
+    
+    // Process with test group
+    let result = group.process_message(&provider, test_message);
+    
+    // Verify expected behavior
+    assert!(result.is_ok());
+}
+```
+
+---
+
+## Getting More Help
+
+If these solutions don't resolve your issue:
+
+1. **Check the version**: Many issues are fixed in newer releases
+2. **Review the changelog**: [Changelog](/resources/changelog) lists all fixes
+3. **Search GitHub issues**: [Issues](https://github.com/openmls/openmls/issues)
+4. **Create a minimal reproduction**: Isolate the problem
+5. **Ask on GitHub Discussions**: [Discussions](https://github.com/openmls/openmls/discussions)
+6. **Report bugs**: [New Issue](https://github.com/openmls/openmls/issues/new)
+
+When reporting issues, include:
+- OpenMLS version
+- Provider type (rust_crypto, libcrux)
+- Platform (Linux, macOS, Windows, WASM)
+- Minimal code to reproduce
+- Full error message with stack trace

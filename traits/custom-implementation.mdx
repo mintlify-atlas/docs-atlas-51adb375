@@ -1,0 +1,596 @@
+---
+title: Custom implementation guide
+description: Step-by-step guide to implementing custom OpenMLS providers
+---
+
+This guide walks through implementing custom providers for OpenMLS, from simple storage backends to complete provider implementations.
+
+## When to implement custom providers
+
+Consider implementing custom providers when you need:
+
+- **Custom storage**: Persistent storage with PostgreSQL, MongoDB, or cloud databases
+- **Platform integration**: Integration with platform-specific crypto APIs (iOS Keychain, Android Keystore, HSMs)
+- **Specialized environments**: WebAssembly, embedded systems, or secure enclaves
+- **Compliance requirements**: Specific cryptographic libraries required by regulations
+
+## Implementation approaches
+
+### Approach 1: Custom storage only (recommended)
+
+The most common scenario is implementing a custom storage provider while using the default crypto implementation:
+
+```rust
+use openmls_rust_crypto::RustCrypto;
+use openmls_traits::OpenMlsProvider;
+
+struct MyProvider {
+    crypto: RustCrypto,
+    storage: MyCustomStorage,
+}
+
+impl OpenMlsProvider for MyProvider {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = RustCrypto;
+    type StorageProvider = MyCustomStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+### Approach 2: Full custom implementation
+
+For specialized environments, implement all traits:
+
+```rust
+struct FullCustomProvider {
+    crypto: MyCustomCrypto,
+    random: MyCustomRandom,
+    storage: MyCustomStorage,
+}
+
+impl OpenMlsProvider for FullCustomProvider {
+    type CryptoProvider = MyCustomCrypto;
+    type RandProvider = MyCustomRandom;
+    type StorageProvider = MyCustomStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.random
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+## Step-by-step: PostgreSQL storage provider
+
+Let's implement a complete PostgreSQL storage provider as an example.
+
+### Step 1: Set up dependencies
+
+```toml Cargo.toml
+[dependencies]
+openmls = "1.0"
+openmls_traits = "0.2"
+openmls_rust_crypto = "0.2"
+tokio-postgres = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+```
+
+### Step 2: Define the storage provider struct
+
+```rust
+use openmls_traits::storage::*;
+use tokio_postgres::Client;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+pub struct PostgresStorage {
+    client: Arc<Mutex<Client>>,
+}
+
+impl PostgresStorage {
+    pub async fn new(client: Client) -> Self {
+        Self {
+            client: Arc::new(Mutex::new(client)),
+        }
+    }
+    
+    pub async fn run_migrations(&self) -> Result<(), PostgresStorageError> {
+        let client = self.client.lock().await;
+        
+        client.execute(
+            "CREATE TABLE IF NOT EXISTS key_packages (
+                hash_ref BYTEA PRIMARY KEY,
+                key_package BYTEA NOT NULL
+            )",
+            &[],
+        ).await?;
+        
+        client.execute(
+            "CREATE TABLE IF NOT EXISTS signature_key_pairs (
+                public_key BYTEA PRIMARY KEY,
+                key_pair BYTEA NOT NULL
+            )",
+            &[],
+        ).await?;
+        
+        client.execute(
+            "CREATE TABLE IF NOT EXISTS group_data (
+                group_id BYTEA NOT NULL,
+                data_type TEXT NOT NULL,
+                data BYTEA NOT NULL,
+                PRIMARY KEY (group_id, data_type)
+            )",
+            &[],
+        ).await?;
+        
+        client.execute(
+            "CREATE INDEX IF NOT EXISTS idx_group_data_group_id 
+             ON group_data(group_id)",
+            &[],
+        ).await?;
+        
+        Ok(())
+    }
+}
+```
+
+### Step 3: Define error types
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum PostgresStorageError {
+    #[error("Database error: {0}")]
+    DatabaseError(#[from] tokio_postgres::Error),
+    
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] serde_json::Error),
+    
+    #[error("Not found")]
+    NotFound,
+}
+```
+
+### Step 4: Implement helper methods
+
+```rust
+impl PostgresStorage {
+    async fn write_group_data(
+        &self,
+        group_id: &[u8],
+        data_type: &str,
+        data: &[u8],
+    ) -> Result<(), PostgresStorageError> {
+        let client = self.client.lock().await;
+        client.execute(
+            "INSERT INTO group_data (group_id, data_type, data) 
+             VALUES ($1, $2, $3)
+             ON CONFLICT (group_id, data_type) 
+             DO UPDATE SET data = EXCLUDED.data",
+            &[&group_id, &data_type, &data],
+        ).await?;
+        Ok(())
+    }
+    
+    async fn read_group_data(
+        &self,
+        group_id: &[u8],
+        data_type: &str,
+    ) -> Result<Option<Vec<u8>>, PostgresStorageError> {
+        let client = self.client.lock().await;
+        let row = client.query_opt(
+            "SELECT data FROM group_data WHERE group_id = $1 AND data_type = $2",
+            &[&group_id, &data_type],
+        ).await?;
+        
+        Ok(row.map(|r| r.get(0)))
+    }
+    
+    async fn delete_group_data(
+        &self,
+        group_id: &[u8],
+        data_type: &str,
+    ) -> Result<(), PostgresStorageError> {
+        let client = self.client.lock().await;
+        client.execute(
+            "DELETE FROM group_data WHERE group_id = $1 AND data_type = $2",
+            &[&group_id, &data_type],
+        ).await?;
+        Ok(())
+    }
+}
+```
+
+### Step 5: Implement StorageProvider trait
+
+```rust
+impl StorageProvider<CURRENT_VERSION> for PostgresStorage {
+    type Error = PostgresStorageError;
+
+    fn write_key_package<
+        HashReference: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &HashReference,
+        key_package: &KeyPackage,
+    ) -> Result<(), Self::Error> {
+        let hash_ref_bytes = serde_json::to_vec(hash_ref)?;
+        let key_package_bytes = serde_json::to_vec(key_package)?;
+        
+        // Use tokio::runtime::Handle::current().block_on for sync context
+        tokio::runtime::Handle::current().block_on(async {
+            let client = self.client.lock().await;
+            client.execute(
+                "INSERT INTO key_packages (hash_ref, key_package) VALUES ($1, $2)
+                 ON CONFLICT (hash_ref) DO UPDATE SET key_package = EXCLUDED.key_package",
+                &[&hash_ref_bytes, &key_package_bytes],
+            ).await?;
+            Ok(())
+        })
+    }
+
+    fn key_package<
+        KeyPackageRef: traits::HashReference<CURRENT_VERSION>,
+        KeyPackage: traits::KeyPackage<CURRENT_VERSION>,
+    >(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<Option<KeyPackage>, Self::Error> {
+        let hash_ref_bytes = serde_json::to_vec(hash_ref)?;
+        
+        tokio::runtime::Handle::current().block_on(async {
+            let client = self.client.lock().await;
+            let row = client.query_opt(
+                "SELECT key_package FROM key_packages WHERE hash_ref = $1",
+                &[&hash_ref_bytes],
+            ).await?;
+            
+            if let Some(row) = row {
+                let data: Vec<u8> = row.get(0);
+                let key_package = serde_json::from_slice(&data)?;
+                Ok(Some(key_package))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    fn delete_key_package<KeyPackageRef: traits::HashReference<CURRENT_VERSION>>(
+        &self,
+        hash_ref: &KeyPackageRef,
+    ) -> Result<(), Self::Error> {
+        let hash_ref_bytes = serde_json::to_vec(hash_ref)?;
+        
+        tokio::runtime::Handle::current().block_on(async {
+            let client = self.client.lock().await;
+            client.execute(
+                "DELETE FROM key_packages WHERE hash_ref = $1",
+                &[&hash_ref_bytes],
+            ).await?;
+            Ok(())
+        })
+    }
+    
+    // Implement remaining methods using similar patterns...
+    // Group state methods use write_group_data/read_group_data helpers
+    
+    fn write_tree<
+        GroupId: traits::GroupId<CURRENT_VERSION>,
+        TreeSync: traits::TreeSync<CURRENT_VERSION>,
+    >(
+        &self,
+        group_id: &GroupId,
+        tree: &TreeSync,
+    ) -> Result<(), Self::Error> {
+        let group_id_bytes = serde_json::to_vec(group_id)?;
+        let tree_bytes = serde_json::to_vec(tree)?;
+        
+        tokio::runtime::Handle::current().block_on(
+            self.write_group_data(&group_id_bytes, "tree", &tree_bytes)
+        )
+    }
+    
+    fn tree<
+        GroupId: traits::GroupId<CURRENT_VERSION>,
+        TreeSync: traits::TreeSync<CURRENT_VERSION>,
+    >(
+        &self,
+        group_id: &GroupId,
+    ) -> Result<Option<TreeSync>, Self::Error> {
+        let group_id_bytes = serde_json::to_vec(group_id)?;
+        
+        tokio::runtime::Handle::current().block_on(async {
+            if let Some(data) = self.read_group_data(&group_id_bytes, "tree").await? {
+                Ok(Some(serde_json::from_slice(&data)?))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+    
+    // ... implement all other required methods
+}
+```
+
+### Step 6: Create the complete provider
+
+```rust
+use openmls_rust_crypto::RustCrypto;
+use openmls_traits::OpenMlsProvider;
+
+pub struct PostgresProvider {
+    crypto: RustCrypto,
+    storage: PostgresStorage,
+}
+
+impl PostgresProvider {
+    pub async fn new(db_client: tokio_postgres::Client) -> Result<Self, PostgresStorageError> {
+        let storage = PostgresStorage::new(db_client).await;
+        storage.run_migrations().await?;
+        
+        Ok(Self {
+            crypto: RustCrypto::default(),
+            storage,
+        })
+    }
+}
+
+impl OpenMlsProvider for PostgresProvider {
+    type CryptoProvider = RustCrypto;
+    type RandProvider = RustCrypto;
+    type StorageProvider = PostgresStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.crypto
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+### Step 7: Use the custom provider
+
+```rust
+use openmls::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Connect to PostgreSQL
+    let (client, connection) = tokio_postgres::connect(
+        "host=localhost user=postgres password=secret dbname=openmls",
+        tokio_postgres::NoTls,
+    ).await?;
+    
+    // Spawn connection handler
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("connection error: {}", e);
+        }
+    });
+    
+    // Create provider with custom storage
+    let provider = PostgresProvider::new(client).await?;
+    
+    // Use with OpenMLS
+    let credential = BasicCredential::new(b"alice@example.com".to_vec());
+    let signature_keypair = provider
+        .crypto()
+        .signature_key_gen(SignatureScheme::ED25519)?;
+    
+    // Store signature key pair
+    provider.storage().write_signature_key_pair(
+        &signature_keypair.1,
+        &signature_keypair,
+    )?;
+    
+    // Create key package
+    let key_package = KeyPackage::builder()
+        .build(
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519,
+            &provider,
+            &signer,
+            credential_with_key,
+        )?;
+    
+    println!("Successfully created key package with PostgreSQL storage!");
+    
+    Ok(())
+}
+```
+
+## Best practices
+
+### Error handling
+
+Provide detailed error types:
+
+```rust
+#[derive(thiserror::Error, Debug)]
+pub enum CustomStorageError {
+    #[error("Database connection failed: {0}")]
+    ConnectionFailed(String),
+    
+    #[error("Serialization failed: {0}")]
+    SerializationFailed(#[from] serde_json::Error),
+    
+    #[error("Key not found: {key}")]
+    KeyNotFound { key: String },
+    
+    #[error("Transaction failed: {0}")]
+    TransactionFailed(String),
+}
+```
+
+### Logging and observability
+
+Add logging for debugging:
+
+```rust
+use tracing::{debug, error, info};
+
+fn write_key_package(...) -> Result<(), Self::Error> {
+    debug!("Writing key package with hash_ref: {:?}", hash_ref);
+    
+    let result = self.do_write(hash_ref, key_package);
+    
+    match &result {
+        Ok(_) => info!("Successfully wrote key package"),
+        Err(e) => error!("Failed to write key package: {}", e),
+    }
+    
+    result
+}
+```
+
+### Testing
+
+Create comprehensive tests:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_key_package_roundtrip() {
+        let provider = create_test_provider().await;
+        
+        // Create test key package
+        let key_package = create_test_key_package(&provider);
+        let hash_ref = key_package.hash_ref(provider.crypto()).unwrap();
+        
+        // Write
+        provider.storage()
+            .write_key_package(&hash_ref, &key_package)
+            .unwrap();
+        
+        // Read
+        let retrieved = provider.storage()
+            .key_package(&hash_ref)
+            .unwrap();
+        
+        assert!(retrieved.is_some());
+        
+        // Delete
+        provider.storage()
+            .delete_key_package(&hash_ref)
+            .unwrap();
+        
+        // Verify deleted
+        let after_delete = provider.storage()
+            .key_package(&hash_ref)
+            .unwrap();
+        
+        assert!(after_delete.is_none());
+    }
+}
+```
+
+### Performance optimization
+
+<AccordionGroup>
+  <Accordion title="Use connection pooling">
+    For SQL databases, use connection pools like `deadpool-postgres` or `bb8`:
+    
+    ```rust
+    use deadpool_postgres::{Config, Pool, Runtime};
+    
+    pub struct PostgresStorage {
+        pool: Pool,
+    }
+    
+    impl PostgresStorage {
+        pub fn new(pool: Pool) -> Self {
+            Self { pool }
+        }
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Batch operations">
+    Implement batch operations for better performance:
+    
+    ```rust
+    pub fn write_key_packages_batch(
+        &self,
+        packages: &[(HashReference, KeyPackage)],
+    ) -> Result<(), Error> {
+        // Use a single transaction for all writes
+        let mut txn = self.begin_transaction()?;
+        for (hash_ref, package) in packages {
+            self.write_key_package_in_txn(&mut txn, hash_ref, package)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Cache frequently accessed data">
+    Add caching layer for hot data:
+    
+    ```rust
+    use moka::sync::Cache;
+    
+    pub struct CachedStorage {
+        inner: PostgresStorage,
+        cache: Cache<Vec<u8>, Vec<u8>>,
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Common pitfalls
+
+<Warning>
+**Avoid these common mistakes:**
+
+1. **Not handling concurrent access**: Ensure thread safety with proper locking
+2. **Ignoring serialization errors**: Always handle serialization/deserialization errors properly
+3. **Missing indexes**: Add database indexes for frequently queried fields
+4. **Blocking async runtime**: Don't block async runtimes with synchronous database calls
+5. **No migration strategy**: Plan for schema evolution from the start
+</Warning>
+
+## See also
+
+<CardGroup cols={2}>
+  <Card title="Crypto provider" icon="lock" href="/traits/crypto-provider">
+    Learn about implementing crypto providers
+  </Card>
+  <Card title="Storage provider" icon="database" href="/traits/storage-provider">
+    Detailed storage provider documentation
+  </Card>
+  <Card title="Random provider" icon="dice" href="/traits/random-provider">
+    Learn about random providers
+  </Card>
+  <Card title="Overview" icon="book" href="/traits/overview">
+    Back to provider traits overview
+  </Card>
+</CardGroup>

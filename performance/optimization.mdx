@@ -1,0 +1,263 @@
+---
+title: 'Optimization'
+description: 'Practical tips for optimizing OpenMLS performance'
+---
+
+OpenMLS provides a high-performance implementation of the MLS protocol, but optimal performance depends on how you configure and use the library. This guide covers key optimization strategies.
+
+## Choose the right ciphersuite
+
+Ciphersuite selection significantly impacts performance. OpenMLS supports multiple ciphersuites with different performance characteristics:
+
+<CodeGroup>
+```rust Performance-optimized
+use openmls::prelude::*;
+
+// ChaCha20Poly1305 with X25519 offers excellent performance
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519;
+
+let config = MlsGroupCreateConfig::builder()
+    .ciphersuite(ciphersuite)
+    .build();
+```
+
+```rust Security-focused
+// AES-GCM ciphersuites for hardware acceleration
+let ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+```
+</CodeGroup>
+
+<Tip>
+ChaCha20Poly1305 ciphersuites typically perform better on systems without AES hardware acceleration, while AES-GCM ciphersuites excel when hardware support is available.
+</Tip>
+
+## Optimize key package generation
+
+Key package creation is a common operation that can be optimized:
+
+```rust
+use openmls::prelude::*;
+use openmls_basic_credential::SignatureKeyPair;
+
+// Pre-generate key packages in batches
+let mut key_packages = Vec::new();
+for _ in 0..10 {
+    let key_package = KeyPackage::builder()
+        .build(
+            ciphersuite,
+            provider,
+            &signer,
+            credential_with_key.clone(),
+        )?;
+    key_packages.push(key_package);
+}
+```
+
+<Note>
+Pre-generating key packages allows you to respond quickly to new group invitations without blocking on cryptographic operations.
+</Note>
+
+## Group size considerations
+
+Performance characteristics change with group size. Consider these factors:
+
+### Small groups (2-10 members)
+
+- Commit operations are fast (typically < 10ms)
+- Message encryption/decryption is minimal overhead
+- Updates propagate quickly
+
+### Medium groups (10-100 members)
+
+- Commit creation time scales with group size
+- Consider batching member additions when creating groups
+- Monitor ratchet tree depth and balance
+
+### Large groups (100+ members)
+
+- Use `PURE_PLAINTEXT_WIRE_FORMAT_POLICY` for better performance if your transport provides encryption
+- Batch operations when possible
+- Consider the tree state when optimizing update frequency
+
+```rust
+use openmls::group::PURE_PLAINTEXT_WIRE_FORMAT_POLICY;
+
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .ciphersuite(ciphersuite)
+    .build();
+```
+
+## Tree state optimization
+
+The ratchet tree's state affects performance:
+
+<AccordionGroup>
+  <Accordion title="Fresh tree after creation">
+    Operations are fastest immediately after group creation when the tree is fully balanced and all members have just joined.
+  </Accordion>
+
+  <Accordion title="After many updates">
+    A tree where many members have sent updates may have different performance characteristics. Consider the update frequency in your application.
+  </Accordion>
+
+  <Accordion title="Blank nodes">
+    Trees with many blank nodes (after member removals) may impact performance. Large-scale removals followed by additions can help rebalance the tree.
+  </Accordion>
+</AccordionGroup>
+
+## Storage provider selection
+
+Your choice of storage provider impacts I/O performance:
+
+<CardGroup cols={2}>
+  <Card title="Memory storage" icon="memory">
+    Fastest for testing and development. No persistence.
+    
+    ```toml
+    openmls_memory_storage = "0.5.0"
+    ```
+  </Card>
+
+  <Card title="SQLite storage" icon="database">
+    Good balance of performance and persistence for most applications.
+    
+    ```toml
+    openmls_sqlite_storage = "0.2.0"
+    ```
+  </Card>
+</CardGroup>
+
+## Commit and update strategies
+
+### Batching operations
+
+When adding multiple members, batch them in a single commit:
+
+```rust
+// Efficient: Single commit for multiple members
+let (commit, welcome, _) = group.add_members(
+    provider,
+    &signer,
+    &[key_package1, key_package2, key_package3],
+)?;
+
+group.merge_pending_commit(provider)?;
+```
+
+### Update frequency
+
+Balance security and performance when deciding update frequency:
+
+<Steps>
+  <Step title="Evaluate your threat model">
+    Determine how often you need forward secrecy updates based on your security requirements.
+  </Step>
+
+  <Step title="Monitor group activity">
+    Send updates based on message count or time intervals that make sense for your application.
+  </Step>
+
+  <Step title="Consider group size">
+    Larger groups have higher costs for processing updates, so adjust frequency accordingly.
+  </Step>
+</Steps>
+
+## Message processing
+
+Optimize how you process incoming messages:
+
+```rust
+// Process messages efficiently
+let processed = group.process_message(provider, message)?;
+
+match processed.into_content() {
+    ProcessedMessageContent::ApplicationMessage(app_msg) => {
+        // Handle application message
+    }
+    ProcessedMessageContent::StagedCommitMessage(staged_commit) => {
+        // Merge commit immediately or defer based on your needs
+        group.merge_staged_commit(provider, *staged_commit)?;
+    }
+    _ => {}
+}
+```
+
+<Warning>
+Don't forget to call `merge_pending_commit()` after creating commits or `merge_staged_commit()` after processing commits. Delayed merging can impact subsequent operations.
+</Warning>
+
+## Crypto provider selection
+
+OpenMLS supports multiple crypto providers with different performance profiles:
+
+```toml
+# In Cargo.toml
+[dependencies]
+openmls = "0.8.1"
+
+# Choose one crypto provider:
+openmls_rust_crypto = "0.5.1"      # Pure Rust, good portability
+openmls_libcrux_crypto = "0.3.1"   # Optimized implementation
+```
+
+<Tip>
+Run benchmarks with your specific workload to determine which crypto provider performs best for your use case.
+</Tip>
+
+## Monitoring and profiling
+
+Measure performance in your specific context:
+
+```rust
+use std::time::Instant;
+
+let start = Instant::now();
+let (commit, welcome, _) = group.add_members(provider, &signer, &[key_package])?;
+let duration = start.elapsed();
+
+println!("Add member took: {:?}", duration);
+```
+
+<Info>
+Use Rust's built-in benchmarking tools or Criterion.rs to establish performance baselines for your application.
+</Info>
+
+## Common scenarios
+
+### Stable groups
+
+For groups with infrequent membership changes:
+
+- Optimize for message encryption/decryption speed
+- Send periodic updates based on message count (e.g., every 1000 messages)
+- Pre-generate key packages for potential new members
+
+### High-fluctuation groups
+
+For groups with frequent joins and leaves (e.g., public channels):
+
+- Batch membership changes when possible
+- Consider shorter update intervals to keep tree balanced
+- Monitor tree blank node ratio
+- Use efficient storage backend for high write volume
+
+### Long-offline devices
+
+When devices may process many messages after being offline:
+
+- Process messages in batches if your protocol allows
+- Consider maximum catchup limits
+- Implement efficient message queuing
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Benchmarks" icon="chart-line" href="/performance/benchmarks">
+    See detailed benchmark results and methodology.
+  </Card>
+
+  <Card title="API reference" icon="code" href="/api-reference/introduction">
+    Explore the complete OpenMLS API.
+  </Card>
+</CardGroup>

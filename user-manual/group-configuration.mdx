@@ -1,0 +1,416 @@
+---
+title: Group configuration
+description: Configure MLS groups with security policies, extensions, and runtime parameters
+---
+
+OpenMLS provides comprehensive configuration options for MLS groups through two main configuration structs: `MlsGroupJoinConfig` for joining existing groups, and `MlsGroupCreateConfig` for creating new groups.
+
+## Configuration overview
+
+The two configuration types serve different purposes:
+
+- **`MlsGroupJoinConfig`** - Runtime configuration set when joining a group
+- **`MlsGroupCreateConfig`** - Includes join config plus group state parameters agreed upon by all members
+
+## Join configuration
+
+`MlsGroupJoinConfig` contains runtime parameters for group operation:
+
+```rust
+use openmls::prelude::*;
+
+let join_config = MlsGroupJoinConfig::builder()
+    .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+    .padding_size(100)
+    .max_past_epochs(3)
+    .number_of_resumption_psks(5)
+    .use_ratchet_tree_extension(true)
+    .sender_ratchet_configuration(SenderRatchetConfiguration::new(
+        10,   // out_of_order_tolerance
+        2000, // maximum_forward_distance
+    ))
+    .build();
+```
+
+### Join configuration parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `wire_format_policy` | `WireFormatPolicy` | Ciphertext | Wire format for handshake messages |
+| `padding_size` | `usize` | 0 | Padding size in bytes |
+| `max_past_epochs` | `usize` | 0 | Number of past epochs for message decryption |
+| `number_of_resumption_psks` | `usize` | 0 | Number of resumption PSKs to keep |
+| `use_ratchet_tree_extension` | `bool` | false | Include ratchet tree in messages |
+| `sender_ratchet_configuration` | `SenderRatchetConfiguration` | Default | Sender ratchet settings |
+
+## Create configuration
+
+`MlsGroupCreateConfig` extends join config with group state parameters:
+
+```rust
+use openmls::prelude::*;
+
+let create_config = MlsGroupCreateConfig::builder()
+    // Join config parameters
+    .padding_size(100)
+    .use_ratchet_tree_extension(true)
+    
+    // Group state parameters
+    .ciphersuite(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519)
+    .capabilities(Capabilities::default())
+    .with_group_context_extensions(extensions)
+    .with_leaf_node_extensions(leaf_extensions)?
+    .build();
+```
+
+### Additional create parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ciphersuite` | `Ciphersuite` | Cryptographic algorithms for the group |
+| `capabilities` | `Capabilities` | Creator's supported features |
+| `group_context_extensions` | `Extensions<GroupContext>` | Group-level extensions |
+| `leaf_node_extensions` | `Extensions<LeafNode>` | Creator's leaf node extensions |
+
+## Wire format policies
+
+The wire format policy controls how handshake messages are transmitted:
+
+```rust
+use openmls::prelude::*;
+
+// Always encrypt handshake messages
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+    .build();
+
+// Always send handshake messages in plaintext
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .build();
+
+// Send plaintext, accept both
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(MIXED_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .build();
+
+// Send ciphertext, accept both
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(MIXED_CIPHERTEXT_WIRE_FORMAT_POLICY)
+    .build();
+```
+
+<Note>
+**Application messages are always encrypted** regardless of the wire format policy. The policy only affects handshake messages (proposals and commits).
+</Note>
+
+### Available wire format policies
+
+- `PURE_PLAINTEXT_WIRE_FORMAT_POLICY` - Send and accept only plaintext
+- `PURE_CIPHERTEXT_WIRE_FORMAT_POLICY` - Send and accept only ciphertext
+- `MIXED_PLAINTEXT_WIRE_FORMAT_POLICY` - Send plaintext, accept both
+- `MIXED_CIPHERTEXT_WIRE_FORMAT_POLICY` - Send ciphertext, accept both
+
+## Sender ratchet configuration
+
+The sender ratchet handles out-of-order message delivery:
+
+```rust
+use openmls::prelude::*;
+
+let sender_ratchet_config = SenderRatchetConfiguration::new(
+    10,   // out_of_order_tolerance: accept up to 10 messages out of order
+    2000, // maximum_forward_distance: maximum generation gap
+);
+
+let config = MlsGroupCreateConfig::builder()
+    .sender_ratchet_configuration(sender_ratchet_config)
+    .build();
+```
+
+### Sender ratchet parameters
+
+- **out_of_order_tolerance** - How many messages can arrive out of order
+- **maximum_forward_distance** - Maximum generation number gap to prevent DoS
+
+<Warning>
+Set `out_of_order_tolerance` based on your network conditions. Higher values allow more flexibility but increase memory usage. Typical values range from 10-100.
+</Warning>
+
+## Message padding
+
+Padding helps hide message length patterns:
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .padding_size(1024)  // Pad to 1KB boundaries
+    .build();
+```
+
+<Note>
+Padding adds the specified number of bytes to every message. This trades bandwidth for privacy. The default is 0 (no padding).
+</Note>
+
+## Past epoch secrets
+
+Allow decryption of messages from previous epochs:
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .max_past_epochs(3)  // Keep secrets for 3 past epochs
+    .build();
+```
+
+<Warning>
+**Security trade-off**: Storing past epoch secrets reduces forward secrecy. Only enable this if your delivery service cannot guarantee message delivery in the same epoch they were sent.
+
+Keep `max_past_epochs` as low as possible - typically 0-3.
+</Warning>
+
+## Resumption PSKs
+
+Store resumption pre-shared keys for group reinit:
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .number_of_resumption_psks(5)
+    .build();
+```
+
+Resumption PSKs are used when reinitializing a group or for out-of-band key establishment.
+
+## Ratchet tree extension
+
+Include the full ratchet tree in group messages:
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .use_ratchet_tree_extension(true)
+    .build();
+```
+
+<Steps>
+
+### When to enable
+
+Enable the ratchet tree extension when:
+- New members need to join without additional round trips
+- External commits should be possible
+- Your delivery service doesn't store ratchet trees
+
+### When to disable
+
+Disable the ratchet tree extension when:
+- Minimizing message size is critical
+- Your delivery service handles ratchet tree distribution
+- The group is large (tree size grows with membership)
+
+</Steps>
+
+## Configuring capabilities
+
+Define what features your client supports:
+
+```rust
+use openmls::prelude::*;
+
+let capabilities = Capabilities::new(
+    Some(&[ProtocolVersion::Mls10]),
+    Some(&[Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519]),
+    Some(&[
+        ExtensionType::ApplicationId,
+        ExtensionType::RatchetTree,
+        ExtensionType::Unknown(0xff00),
+    ]),
+    Some(&[
+        ProposalType::Add,
+        ProposalType::Update,
+        ProposalType::Remove,
+    ]),
+    Some(&[CredentialType::Basic]),
+);
+
+let config = MlsGroupCreateConfig::builder()
+    .capabilities(capabilities)
+    .build();
+```
+
+Pass `None` for any parameter to use defaults:
+- Protocol versions: Group's protocol version
+- Ciphersuites: Group's ciphersuite
+- Extensions: All basic extension types
+- Proposals: All basic proposal types
+
+## Group context extensions
+
+Set group-level extensions that all members must support:
+
+```rust
+use openmls::prelude::*;
+
+let external_senders = vec![ExternalSender::new(
+    server_signature_key,
+    server_credential,
+)];
+
+let required_capabilities = RequiredCapabilitiesExtension::new(
+    &[ExtensionType::ApplicationId],
+    &[ProposalType::GroupContextExtensions],
+    &[CredentialType::Basic],
+);
+
+let extensions = Extensions::from_vec(vec![
+    Extension::ExternalSenders(external_senders),
+    Extension::RequiredCapabilities(required_capabilities),
+])?;
+
+let config = MlsGroupCreateConfig::builder()
+    .with_group_context_extensions(extensions)
+    .build();
+```
+
+### Common group context extensions
+
+- **ExternalSenders** - Authorized external senders (e.g., server)
+- **RequiredCapabilities** - Capabilities all members must support
+
+## Leaf node extensions
+
+Configure extensions in the creator's leaf node:
+
+```rust
+use openmls::prelude::*;
+
+let leaf_extensions = Extensions::single(
+    Extension::ApplicationId(ApplicationIdExtension::new(b"my-app-v1")),
+)?;
+
+let config = MlsGroupCreateConfig::builder()
+    .with_leaf_node_extensions(leaf_extensions)?
+    .build();
+```
+
+<Warning>
+Leaf node extensions must be supported by the capabilities you configure. The builder will return an error if there's a mismatch.
+</Warning>
+
+## Unknown extensions
+
+Use custom extensions for application-specific data:
+
+```rust
+use openmls::prelude::*;
+
+// Define a custom extension type
+let custom_extension = Extension::Unknown(
+    0xff00,  // Custom extension type
+    UnknownExtension(vec![1, 2, 3, 4]),
+);
+
+let extensions = Extensions::single(custom_extension)?;
+
+// Ensure capabilities include the custom type
+let capabilities = Capabilities::new(
+    None,
+    None,
+    Some(&[ExtensionType::Unknown(0xff00)]),
+    None,
+    None,
+);
+
+let config = MlsGroupCreateConfig::builder()
+    .capabilities(capabilities)
+    .with_group_context_extensions(extensions)
+    .build();
+```
+
+<Note>
+Unknown extensions carry data but don't alter protocol behavior. They can be used to have the group agree on application-specific metadata.
+</Note>
+
+## Default configurations
+
+Use sensible defaults for most scenarios:
+
+```rust
+use openmls::prelude::*;
+
+// Join config with defaults
+let join_config = MlsGroupJoinConfig::default();
+
+// Create config with defaults
+let create_config = MlsGroupCreateConfig::default();
+
+// Create config with only ciphersuite changed
+let create_config = MlsGroupCreateConfig::builder()
+    .ciphersuite(Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519)
+    .build();
+```
+
+## Configuration examples
+
+### High-security configuration
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+    .padding_size(2048)
+    .max_past_epochs(0)  // No past epoch secrets
+    .use_ratchet_tree_extension(true)
+    .sender_ratchet_configuration(SenderRatchetConfiguration::new(5, 1000))
+    .build();
+```
+
+### High-performance configuration
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .padding_size(0)  // No padding
+    .use_ratchet_tree_extension(false)
+    .sender_ratchet_configuration(SenderRatchetConfiguration::new(50, 5000))
+    .build();
+```
+
+### Unreliable network configuration
+
+```rust
+use openmls::prelude::*;
+
+let config = MlsGroupCreateConfig::builder()
+    .max_past_epochs(3)  // Handle delayed messages
+    .sender_ratchet_configuration(SenderRatchetConfiguration::new(100, 10000))
+    .use_ratchet_tree_extension(true)
+    .build();
+```
+
+## Related types
+
+- `MlsGroupJoinConfig` - Runtime configuration for joined groups
+- `MlsGroupCreateConfig` - Configuration for new groups
+- `WireFormatPolicy` - Policy for message wire formats
+- `SenderRatchetConfiguration` - Out-of-order message handling
+- `Capabilities` - Supported protocol features
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Creating groups" href="./creating-groups">
+    Create groups with custom configurations
+  </Card>
+  <Card title="Persistence" href="./persistence">
+    Learn about storing group state
+  </Card>
+</CardGroup>

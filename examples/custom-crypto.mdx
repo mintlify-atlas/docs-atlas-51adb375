@@ -1,0 +1,551 @@
+---
+title: "Custom Crypto Provider"
+description: "Implement a custom cryptographic provider for OpenMLS"
+---
+
+OpenMLS uses a pluggable crypto provider system, allowing you to implement custom cryptographic backends. This is useful for hardware security modules (HSMs), FIPS-compliant libraries, or platform-specific crypto APIs.
+
+## Overview
+
+You'll learn how to:
+- Implement the `OpenMlsProvider` trait
+- Create a custom `CryptoProvider` implementation
+- Integrate with platform-specific crypto libraries
+- Use your custom provider with OpenMLS
+
+<Steps>
+
+### Understand the provider traits
+
+OpenMLS requires three provider traits:
+
+```rust
+use openmls_traits::{
+    OpenMlsProvider,
+    crypto::OpenMlsCrypto,
+    random::OpenMlsRand,
+    storage::StorageProvider,
+};
+
+pub trait OpenMlsProvider {
+    type CryptoProvider: OpenMlsCrypto;
+    type RandProvider: OpenMlsRand;
+    type StorageProvider: StorageProvider<CURRENT_VERSION>;
+
+    fn crypto(&self) -> &Self::CryptoProvider;
+    fn rand(&self) -> &Self::RandProvider;
+    fn storage(&self) -> &Self::StorageProvider;
+}
+```
+
+### Create the provider structure
+
+Define your custom provider structure:
+
+```rust
+use openmls_traits::{OpenMlsProvider, crypto::OpenMlsCrypto};
+
+/// Custom crypto provider using platform-specific implementations
+pub struct CustomCryptoProvider {
+    crypto: CustomCrypto,
+    rand: CustomRand,
+    storage: CustomStorage,
+}
+
+impl Default for CustomCryptoProvider {
+    fn default() -> Self {
+        Self {
+            crypto: CustomCrypto::new(),
+            rand: CustomRand::new(),
+            storage: CustomStorage::new(),
+        }
+    }
+}
+
+impl OpenMlsProvider for CustomCryptoProvider {
+    type CryptoProvider = CustomCrypto;
+    type RandProvider = CustomRand;
+    type StorageProvider = CustomStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.rand
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+### Implement the crypto trait
+
+Implement `OpenMlsCrypto` for your custom crypto backend:
+
+```rust
+use openmls_traits::crypto::OpenMlsCrypto;
+use openmls_traits::types::{
+    Ciphersuite, CryptoError, HpkeAeadType, HpkeConfig,
+    HpkeKdfType, HpkeKemType, SignatureScheme,
+};
+
+pub struct CustomCrypto {
+    // Your crypto backend state
+    // e.g., HSM connection, crypto library handle
+}
+
+impl CustomCrypto {
+    pub fn new() -> Self {
+        Self {
+            // Initialize your crypto backend
+        }
+    }
+}
+
+impl OpenMlsCrypto for CustomCrypto {
+    fn supports_cipher_suite(&self, ciphersuite: Ciphersuite) -> bool {
+        // Return true for supported ciphersuites
+        match ciphersuite {
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 => true,
+            Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519 => true,
+            _ => false,
+        }
+    }
+
+    fn hash(
+        &self,
+        ciphersuite: Ciphersuite,
+        data: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement hash function using your crypto backend
+        match ciphersuite.hash_algorithm() {
+            HashType::Sha256 => {
+                // Use your platform's SHA-256 implementation
+                // Example: my_crypto_lib::sha256(data)
+                todo!("Implement SHA-256")
+            }
+            HashType::Sha384 => {
+                todo!("Implement SHA-384")
+            }
+            _ => Err(CryptoError::UnsupportedCipherSuite),
+        }
+    }
+
+    fn hkdf_extract(
+        &self,
+        ciphersuite: Ciphersuite,
+        salt: &[u8],
+        ikm: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement HKDF-Extract
+        // Example using hypothetical crypto library:
+        // my_crypto_lib::hkdf_extract(
+        //     ciphersuite.hash_algorithm(),
+        //     salt,
+        //     ikm,
+        // )
+        todo!("Implement HKDF-Extract")
+    }
+
+    fn hkdf_expand(
+        &self,
+        ciphersuite: Ciphersuite,
+        prk: &[u8],
+        info: &[u8],
+        output_length: usize,
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement HKDF-Expand
+        todo!("Implement HKDF-Expand")
+    }
+
+    fn aead_encrypt(
+        &self,
+        ciphersuite: Ciphersuite,
+        key: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement AEAD encryption
+        match ciphersuite.aead_algorithm() {
+            AeadType::Aes128Gcm => {
+                // Use AES-128-GCM from your crypto backend
+                todo!("Implement AES-128-GCM encryption")
+            }
+            AeadType::ChaCha20Poly1305 => {
+                todo!("Implement ChaCha20-Poly1305 encryption")
+            }
+            _ => Err(CryptoError::UnsupportedCipherSuite),
+        }
+    }
+
+    fn aead_decrypt(
+        &self,
+        ciphersuite: Ciphersuite,
+        key: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement AEAD decryption
+        todo!("Implement AEAD decryption")
+    }
+
+    fn signature_key_gen(
+        &self,
+        signature_scheme: SignatureScheme,
+    ) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+        // Generate signature key pair
+        match signature_scheme {
+            SignatureScheme::ED25519 => {
+                // Generate Ed25519 key pair
+                // Returns (private_key, public_key)
+                todo!("Implement Ed25519 key generation")
+            }
+            SignatureScheme::ECDSA_SECP256R1_SHA256 => {
+                todo!("Implement ECDSA key generation")
+            }
+            _ => Err(CryptoError::UnsupportedSignatureScheme),
+        }
+    }
+
+    fn sign(
+        &self,
+        signature_scheme: SignatureScheme,
+        data: &[u8],
+        private_key: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Sign data with private key
+        todo!("Implement signature generation")
+    }
+
+    fn verify(
+        &self,
+        signature_scheme: SignatureScheme,
+        data: &[u8],
+        public_key: &[u8],
+        signature: &[u8],
+    ) -> Result<(), CryptoError> {
+        // Verify signature
+        todo!("Implement signature verification")
+    }
+
+    fn hpke_seal(
+        &self,
+        config: HpkeConfig,
+        pk_r: &[u8],
+        info: &[u8],
+        aad: &[u8],
+        ptxt: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement HPKE seal operation
+        todo!("Implement HPKE seal")
+    }
+
+    fn hpke_open(
+        &self,
+        config: HpkeConfig,
+        enc: &[u8],
+        sk_r: &[u8],
+        info: &[u8],
+        aad: &[u8],
+        ct: &[u8],
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement HPKE open operation
+        todo!("Implement HPKE open")
+    }
+
+    fn hpke_setup_sender_and_export(
+        &self,
+        config: HpkeConfig,
+        pk_r: &[u8],
+        info: &[u8],
+        exporter_context: &[u8],
+        exporter_length: usize,
+    ) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+        // Implement HPKE sender setup with export
+        todo!("Implement HPKE sender setup")
+    }
+
+    fn hpke_setup_receiver_and_export(
+        &self,
+        config: HpkeConfig,
+        enc: &[u8],
+        sk_r: &[u8],
+        info: &[u8],
+        exporter_context: &[u8],
+        exporter_length: usize,
+    ) -> Result<Vec<u8>, CryptoError> {
+        // Implement HPKE receiver setup with export
+        todo!("Implement HPKE receiver setup")
+    }
+}
+```
+
+### Implement the random provider
+
+Implement secure random number generation:
+
+```rust
+use openmls_traits::random::OpenMlsRand;
+
+pub struct CustomRand {
+    // Random number generator state
+}
+
+impl CustomRand {
+    pub fn new() -> Self {
+        Self {
+            // Initialize secure RNG
+        }
+    }
+}
+
+impl OpenMlsRand for CustomRand {
+    fn random_array<const N: usize>(&self) -> Result<[u8; N], CryptoError> {
+        let mut output = [0u8; N];
+        self.random_vec(N)?
+            .into_iter()
+            .enumerate()
+            .for_each(|(i, b)| output[i] = b);
+        Ok(output)
+    }
+
+    fn random_vec(&self, length: usize) -> Result<Vec<u8>, CryptoError> {
+        // Generate random bytes using your platform's secure RNG
+        // Example: platform_rng::get_random_bytes(length)
+        let mut output = vec![0u8; length];
+        // Fill with random data from your crypto backend
+        todo!("Implement random byte generation")
+    }
+}
+```
+
+### Use the custom provider
+
+Use your custom provider with OpenMLS:
+
+```rust
+use openmls::prelude::*;
+use openmls_basic_credential::SignatureKeyPair;
+
+fn main() {
+    // Create an instance of your custom provider
+    let provider = CustomCryptoProvider::default();
+
+    let ciphersuite = 
+        Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+    // Create credentials using the custom provider
+    let credential = BasicCredential::new(b"Alice".to_vec());
+    let signature_keys = SignatureKeyPair::new(
+        ciphersuite.signature_algorithm()
+    )
+    .expect("Failed to generate signature keys");
+
+    signature_keys
+        .store(provider.storage())
+        .expect("Failed to store keys");
+
+    let credential_with_key = CredentialWithKey {
+        credential: credential.into(),
+        signature_key: signature_keys.public().into(),
+    };
+
+    // Create a key package using the custom provider
+    let key_package = KeyPackage::builder()
+        .build(
+            ciphersuite,
+            &provider,
+            &signature_keys,
+            credential_with_key.clone(),
+        )
+        .expect("Failed to create key package");
+
+    // Create a group using the custom provider
+    let mut group = MlsGroup::new(
+        &provider,
+        &signature_keys,
+        &MlsGroupCreateConfig::default(),
+        credential_with_key,
+    )
+    .expect("Failed to create group");
+
+    println!("Successfully created group with custom crypto provider!");
+}
+```
+
+</Steps>
+
+## HSM Integration Example
+
+For hardware security module integration:
+
+```rust
+use pkcs11::*; // Example PKCS#11 library
+
+pub struct HsmCryptoProvider {
+    session: Session,
+    crypto: HsmCrypto,
+    rand: HsmRand,
+    storage: MemoryStorage,
+}
+
+impl HsmCryptoProvider {
+    pub fn new(pkcs11_lib_path: &str, pin: &str) -> Result<Self, Error> {
+        // Initialize PKCS#11 session
+        let ctx = Ctx::new(pkcs11_lib_path)?;
+        let slot = ctx.get_slot_list(true)?.first();
+        let session = ctx.open_session(slot, true)?;
+        session.login(UserType::User, Some(pin))?;
+
+        Ok(Self {
+            session: session.clone(),
+            crypto: HsmCrypto::new(session.clone()),
+            rand: HsmRand::new(session.clone()),
+            storage: MemoryStorage::default(),
+        })
+    }
+}
+
+impl OpenMlsProvider for HsmCryptoProvider {
+    type CryptoProvider = HsmCrypto;
+    type RandProvider = HsmRand;
+    type StorageProvider = MemoryStorage;
+
+    fn crypto(&self) -> &Self::CryptoProvider {
+        &self.crypto
+    }
+
+    fn rand(&self) -> &Self::RandProvider {
+        &self.rand
+    }
+
+    fn storage(&self) -> &Self::StorageProvider {
+        &self.storage
+    }
+}
+```
+
+## Platform-Specific Crypto
+
+For iOS/macOS using CommonCrypto:
+
+```rust
+#[cfg(target_os = "macos")]
+use core_foundation::base::TCFType;
+
+pub struct AppleCryptoProvider {
+    crypto: AppleCrypto,
+    rand: AppleRand,
+    storage: KeychainStorage,
+}
+
+impl AppleCrypto {
+    fn hash(&self, algorithm: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        // Use CommonCrypto for hashing
+        unsafe {
+            let mut digest = vec![0u8; algorithm.digest_size()];
+            match algorithm {
+                HashType::Sha256 => {
+                    CC_SHA256(data.as_ptr(), data.len() as u32, digest.as_mut_ptr());
+                }
+                _ => return Err(CryptoError::UnsupportedHashAlgorithm),
+            }
+            Ok(digest)
+        }
+    }
+}
+```
+
+## WebAssembly Crypto
+
+For browser-based applications:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+use web_sys::SubtleCrypto;
+use wasm_bindgen::prelude::*;
+
+pub struct WebCryptoProvider {
+    crypto: WebCrypto,
+    rand: WebRand,
+    storage: IndexedDbStorage,
+}
+
+impl WebCrypto {
+    async fn hash(&self, algorithm: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let window = web_sys::window().unwrap();
+        let crypto = window.crypto().unwrap();
+        let subtle = crypto.subtle();
+
+        let algorithm = match algorithm {
+            HashType::Sha256 => "SHA-256",
+            _ => return Err(CryptoError::UnsupportedHashAlgorithm),
+        };
+
+        let promise = subtle.digest_with_str_and_u8_array(algorithm, data)?;
+        let result = wasm_bindgen_futures::JsFuture::from(promise).await?;
+        
+        // Convert result to Vec<u8>
+        todo!("Convert JS ArrayBuffer to Vec<u8>")
+    }
+}
+```
+
+## Testing Your Provider
+
+Create tests to verify your implementation:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_custom_provider_group_creation() {
+        let provider = CustomCryptoProvider::default();
+        let ciphersuite = 
+            Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
+
+        assert!(provider.crypto().supports_cipher_suite(ciphersuite));
+
+        // Test key generation
+        let (sk, pk) = provider
+            .crypto()
+            .signature_key_gen(ciphersuite.signature_algorithm())
+            .expect("Key generation failed");
+
+        assert!(!sk.is_empty());
+        assert!(!pk.is_empty());
+    }
+
+    #[test]
+    fn test_random_generation() {
+        let provider = CustomCryptoProvider::default();
+        let random_bytes = provider.rand().random_vec(32)
+            .expect("Random generation failed");
+
+        assert_eq!(random_bytes.len(), 32);
+        // Verify randomness (basic check)
+        assert!(random_bytes.iter().any(|&b| b != 0));
+    }
+}
+```
+
+## Best Practices
+
+1. **Security Auditing**: Have your crypto implementation audited by security experts
+2. **Constant-Time Operations**: Implement timing-safe comparisons for sensitive operations
+3. **Key Zeroization**: Securely erase sensitive key material from memory
+4. **Error Handling**: Provide detailed error information for debugging
+5. **Testing**: Thoroughly test against known test vectors
+
+## Next Steps
+
+- Implement [custom storage](/examples/custom-storage) for your provider
+- Learn about [key rotation](/examples/key-rotation) with custom providers
+- Explore [server integration](/examples/server-integration) patterns

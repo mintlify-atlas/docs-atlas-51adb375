@@ -1,0 +1,378 @@
+---
+title: Key updates
+description: Update leaf node encryption keys to maintain forward secrecy in OpenMLS
+---
+
+Key updates (also called self-updates) allow group members to refresh their encryption keys and achieve post-compromise security. OpenMLS provides both immediate commit operations and proposal-based workflows.
+
+## Why update keys?
+
+Regular key updates provide important security benefits:
+
+- **Forward secrecy** - Previous messages remain secure even if current keys are compromised
+- **Post-compromise security** - Recover security after a potential compromise
+- **Key rotation** - Meet compliance requirements for regular key rotation
+- **Credential updates** - Update your credential, capabilities, or extensions
+
+## Immediate self-update
+
+The `self_update()` function updates your leaf node and immediately commits:
+
+```rust
+use openmls::prelude::*;
+
+let bundle = alice_group.self_update(
+    provider,
+    &alice_signature_keys,
+    LeafNodeParameters::default(),
+)?;
+
+let (commit, welcome, group_info) = bundle.into_contents();
+
+// Send commit to existing members
+delivery_service.send_to_members(commit)?;
+
+// If there were pending add proposals, send welcome
+if let Some(welcome_msg) = welcome {
+    delivery_service.send_to_new_members(welcome_msg)?;
+}
+```
+
+<Note>
+By default, `self_update()` only updates the HPKE encryption key. You can also update credentials, capabilities, and extensions using `LeafNodeParameters`.
+</Note>
+
+## Customizing leaf node parameters
+
+Update additional leaf node properties:
+
+```rust
+use openmls::prelude::*;
+
+let leaf_node_parameters = LeafNodeParameters::builder()
+    .with_credential(new_credential_with_key)
+    .with_capabilities(new_capabilities)
+    .with_extensions(new_extensions)
+    .build();
+
+let bundle = alice_group.self_update(
+    provider,
+    &alice_signature_keys,
+    leaf_node_parameters,
+)?;
+```
+
+## Updating the signature key
+
+To rotate your signature key, use `self_update_with_new_signer()`:
+
+```rust
+use openmls::prelude::*;
+
+// Generate new signature keys
+let new_signature_keys = SignatureKeyPair::new(ciphersuite.signature_algorithm())?;
+new_signature_keys.store(provider.storage())?;
+
+// Create credential with new public key
+let new_credential_with_key = CredentialWithKey {
+    credential: alice_credential,
+    signature_key: new_signature_keys.to_public_vec().into(),
+};
+
+// Create the signer bundle
+let new_signer_bundle = NewSignerBundle::new(
+    &new_signature_keys,
+    new_credential_with_key,
+);
+
+// Update with new signer
+let bundle = alice_group.self_update_with_new_signer(
+    provider,
+    &alice_signature_keys,  // Old signer signs the commit
+    new_signer_bundle,      // New signer for future messages
+    LeafNodeParameters::default(),
+)?;
+```
+
+<Warning>
+When using `self_update_with_new_signer()`, the `Signer` in the `NewSignerBundle` must match the public key and credential in the `CredentialWithKey`. The `LeafNodeParameters` must NOT contain a `CredentialWithKey` as it's provided in the signer bundle.
+</Warning>
+
+## Proposal-based updates
+
+Create an update proposal without immediately committing:
+
+```rust
+use openmls::prelude::*;
+
+let (proposal_message, proposal_ref) = alice_group.propose_self_update(
+    provider,
+    &alice_signature_keys,
+    LeafNodeParameters::default(),
+)?;
+
+// Send proposal to group members
+delivery_service.send_to_members(proposal_message)?;
+
+// Later, commit to the proposal
+let (commit, welcome, group_info) = alice_group.commit_to_pending_proposals(
+    provider,
+    &alice_signature_keys,
+)?;
+```
+
+<Note>
+When using proposal-based updates, the new leaf node's private key is stored separately and will be used after the proposal is committed. This happens automatically when you or another member commits to the update proposal.
+</Note>
+
+## Understanding commit paths
+
+Updates include a "path" - an update to the sender's key material in the ratchet tree:
+
+```rust
+use openmls::prelude::*;
+
+// Self-update always includes a path
+let bundle = alice_group.self_update(
+    provider,
+    &alice_signature_keys,
+    LeafNodeParameters::default(),
+)?;
+
+// The commit includes encrypted path secrets for other members
+let (commit, _, _) = bundle.into_contents();
+```
+
+The path ensures that:
+- All members derive new shared secrets
+- The group achieves post-compromise security
+- Forward secrecy is maintained
+
+## Covering pending proposals
+
+Self-updates can cover pending add proposals:
+
+```rust
+use openmls::prelude::*;
+
+// Bob proposes to add Charlie
+let add_proposal = bob_group.propose_add_member(
+    provider,
+    &bob_signature_keys,
+    &charlie_key_package,
+)?;
+
+// Alice processes the proposal
+let processed = alice_group.process_message(provider, add_proposal)?;
+if let ProcessedMessageContent::ProposalMessage(proposal) = processed.into_content() {
+    alice_group.store_pending_proposal(provider.storage(), *proposal)?;
+}
+
+// Alice's self-update covers the add proposal
+let bundle = alice_group.self_update(
+    provider,
+    &alice_signature_keys,
+    LeafNodeParameters::default(),
+)?;
+
+let (commit, welcome, group_info) = bundle.into_contents();
+
+// Welcome is Some because add proposal was covered
+let welcome_msg = welcome.expect("Welcome should be present");
+delivery_service.send_to_new_members(welcome_msg)?;
+```
+
+<Note>
+Even though you're only updating your own leaf node, the commit might cover pending add proposals from the proposal store. Always check if a `Welcome` message is returned.
+</Note>
+
+## Using the commit builder
+
+For more control, use the commit builder directly:
+
+```rust
+use openmls::prelude::*;
+
+let leaf_node_parameters = LeafNodeParameters::builder()
+    .with_capabilities(new_capabilities)
+    .build();
+
+let bundle = alice_group
+    .commit_builder()
+    .leaf_node_parameters(leaf_node_parameters)
+    .force_self_update(true)  // Always include path
+    .load_psks(provider.storage())?
+    .build(provider.rand(), provider.crypto(), signer, |_| true)?
+    .stage_commit(provider)?;
+```
+
+## Forced vs optional paths
+
+Some operations force a path, while others make it optional:
+
+```rust
+use openmls::prelude::*;
+
+// self_update() always includes a path
+let bundle = alice_group.self_update(
+    provider,
+    signer,
+    LeafNodeParameters::default(),
+)?;
+
+// add_members() includes a path
+let (commit, welcome, group_info) = alice_group.add_members(
+    provider,
+    signer,
+    &[bob_key_package],
+)?;
+
+// add_members_without_update() only includes path if needed
+let (commit, welcome, group_info) = alice_group.add_members_without_update(
+    provider,
+    signer,
+    &[charlie_key_package],
+)?;
+```
+
+See [RFC 9420 Section 17.4](https://www.rfc-editor.org/rfc/rfc9420.html#section-17.4) for which proposals require a path.
+
+## Best practices
+
+<Steps>
+
+### Update regularly
+
+Schedule periodic key updates:
+
+```rust
+use std::time::Duration;
+
+// Update keys every 7 days
+let update_interval = Duration::from_secs(7 * 24 * 60 * 60);
+
+if last_update.elapsed() >= update_interval {
+    alice_group.self_update(
+        provider,
+        signer,
+        LeafNodeParameters::default(),
+    )?;
+}
+```
+
+### Update after compromise suspicion
+
+Immediately update if you suspect key compromise:
+
+```rust
+if detected_potential_compromise() {
+    // Urgent key update
+    alice_group.self_update(
+        provider,
+        signer,
+        LeafNodeParameters::default(),
+    )?;
+}
+```
+
+### Validate new leaf nodes
+
+When processing update proposals from others:
+
+```rust
+for update_proposal in staged_commit.update_proposals() {
+    let new_leaf = update_proposal.update_proposal().leaf_node();
+    
+    // Validate the new leaf node
+    validate_leaf_node(new_leaf)?;
+    
+    // Validate credential
+    validate_credential(new_leaf.credential())?;
+}
+```
+
+### Coordinate updates
+
+Avoid multiple members updating simultaneously:
+
+```rust
+// Use a coordination mechanism
+if can_update_now() {
+    alice_group.self_update(provider, signer, LeafNodeParameters::default())?;
+} else {
+    // Queue update for later
+    schedule_update_when_available();
+}
+```
+
+</Steps>
+
+## Encryption key vs signature key
+
+Understand the difference between the two key types:
+
+- **Encryption key (HPKE)** - Used for encrypting messages and path secrets. Updated with every `self_update()`.
+- **Signature key** - Used for signing messages and proposals. Only updated with `self_update_with_new_signer()`.
+
+```rust
+// Updates only encryption key
+let bundle = alice_group.self_update(
+    provider,
+    signer,
+    LeafNodeParameters::default(),
+)?;
+
+// Updates both encryption AND signature keys
+let bundle = alice_group.self_update_with_new_signer(
+    provider,
+    old_signer,
+    new_signer_bundle,
+    LeafNodeParameters::default(),
+)?;
+```
+
+## Validation requirements
+
+Updated leaf nodes must meet validation requirements:
+
+```rust
+use openmls::prelude::*;
+
+let new_extensions = Extensions::single(
+    Extension::ApplicationId(ApplicationIdExtension::new(b"my-app")),
+)?;
+
+let leaf_node_parameters = LeafNodeParameters::builder()
+    .with_extensions(new_extensions)
+    .build();
+
+// This will fail if capabilities don't support the extension
+let result = alice_group.self_update(
+    provider,
+    signer,
+    leaf_node_parameters,
+);
+```
+
+<Warning>
+The updated leaf node must support all group context extensions. If your new capabilities don't include support for required extensions, the update will fail with `UnsupportedGroupContextExtensions`.
+</Warning>
+
+## Related types
+
+- `MlsGroup::self_update()` - Update leaf node with default signer
+- `MlsGroup::self_update_with_new_signer()` - Update leaf node and signature key
+- `MlsGroup::propose_self_update()` - Create update proposal
+- `LeafNodeParameters` - Configuration for leaf node updates
+- `NewSignerBundle` - Bundle of new signer and credential
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Processing messages" href="./processing-messages">
+    Handle incoming update proposals and commits
+  </Card>
+  <Card title="Group configuration" href="./group-configuration">
+    Learn about sender ratchet and other security settings
+  </Card>
+</CardGroup>

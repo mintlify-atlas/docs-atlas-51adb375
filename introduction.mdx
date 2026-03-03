@@ -1,0 +1,109 @@
+---
+title: "Introduction"
+description: "OpenMLS is a Rust implementation of the Messaging Layer Security (MLS) protocol for end-to-end encrypted messaging"
+---
+
+## What is OpenMLS?
+
+OpenMLS is a Rust implementation of the Messaging Layer Security (MLS) protocol, as specified in [RFC 9420](https://datatracker.ietf.org/doc/html/rfc9420). It is a software library that can serve as a building block in applications that require end-to-end encryption of messages.
+
+OpenMLS has a safe and easy-to-use interface that hides the complexity of the underlying cryptographic operations, allowing you to focus on building secure messaging applications.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="RFC-compliant" icon="shield-check">
+    Full implementation of the MLS protocol as specified in RFC 9420
+  </Card>
+  <Card title="Multiple ciphersuites" icon="lock">
+    Support for industry-standard ciphersuites including the mandatory-to-implement X25519 suite
+  </Card>
+  <Card title="Pluggable providers" icon="puzzle-piece">
+    Flexible architecture with interchangeable cryptographic, storage, and random number providers
+  </Card>
+  <Card title="Cross-platform" icon="globe">
+    Built and tested on Linux, Windows, macOS, and mobile platforms including iOS and Android
+  </Card>
+</CardGroup>
+
+## Supported ciphersuites
+
+OpenMLS supports the following MLS ciphersuites:
+
+- **MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519** (mandatory-to-implement)
+- **MLS_128_DHKEMP256_AES128GCM_SHA256_P256**
+- **MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519**
+
+## Architecture highlights
+
+### Pluggable cryptography
+
+OpenMLS does not implement its own cryptographic primitives. Instead, it relies on existing implementations through provider traits. This allows you to:
+
+- Use the built-in **libcrux** or **Rust Crypto** providers
+- Bring your own cryptographic implementation
+- Meet compliance requirements with specific crypto libraries
+
+### Safe and ergonomic API
+
+The library provides a high-level `MlsGroup` API that abstracts away protocol complexity:
+
+- Create and manage groups
+- Add and remove members
+- Send and receive encrypted messages
+- Handle key updates and commits
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add OpenMLS to your Rust project and configure features
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first two-party encrypted group in minutes
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/mls-protocol">
+    Learn about MLS protocol fundamentals
+  </Card>
+  <Card title="User manual" icon="code" href="/user-manual/creating-groups">
+    Dive into detailed guides for group operations
+  </Card>
+</CardGroup>
+
+## Platform support
+
+OpenMLS is built and tested on the following platforms:
+
+**Fully supported and tested:**
+- x86_64-unknown-linux-gnu
+- i686-unknown-linux-gnu
+- x86_64-pc-windows-msvc
+- i686-pc-windows-msvc
+- x86_64-apple-darwin
+
+**Built but not tested:**
+- aarch64-apple-darwin
+- aarch64-unknown-linux-gnu
+- aarch64-linux-android
+- aarch64-apple-ios
+- aarch64-apple-ios-sim
+- wasm32-unknown-unknown
+- armv7-linux-androideabi
+- x86_64-linux-android
+- i686-linux-android
+
+<Note>
+OpenMLS supports 32-bit platforms and above.
+</Note>
+
+## Maintenance and support
+
+OpenMLS is maintained and developed by [Phoenix R&D](https://phnx.im) and [Cryspen](https://cryspen.com).
+
+## Community
+
+Join the OpenMLS community:
+
+- [Zulip Chat](https://openmls.zulipchat.com) - Ask questions and discuss
+- [Mailing List](https://groups.google.com/u/0/g/openmls-dev) - Development discussions
+- [GitHub](https://github.com/openmls/openmls) - Report issues and contribute

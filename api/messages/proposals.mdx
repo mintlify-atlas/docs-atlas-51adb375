@@ -1,0 +1,501 @@
+---
+title: Proposal Messages
+description: API reference for OpenMLS proposal types and proposal handling
+---
+
+Proposals are requests to modify the group state. They are collected and applied atomically when a Commit is processed.
+
+## Proposal Types
+
+OpenMLS supports multiple proposal types defined by RFC 9420 and extensions.
+
+### ProposalType
+
+```rust
+pub enum ProposalType {
+    Add,
+    Update,
+    Remove,
+    PreSharedKey,
+    Reinit,
+    ExternalInit,
+    GroupContextExtensions,
+    SelfRemove,
+    #[cfg(feature = "extensions-draft-08")]
+    AppEphemeral,
+    #[cfg(feature = "extensions-draft-08")]
+    AppDataUpdate,
+    Grease(u16),
+    Custom(u16),
+}
+```
+
+<ResponseField name="Add" type="0x0001">
+  Request to add a new member to the group
+</ResponseField>
+
+<ResponseField name="Update" type="0x0002">
+  Request to update the sender's leaf node (requires path)
+</ResponseField>
+
+<ResponseField name="Remove" type="0x0003">
+  Request to remove a member from the group (requires path)
+</ResponseField>
+
+<ResponseField name="PreSharedKey" type="0x0004">
+  Request to inject a pre-shared key into the key schedule
+</ResponseField>
+
+<ResponseField name="Reinit" type="0x0005">
+  Request to reinitialize the group with new parameters
+</ResponseField>
+
+<ResponseField name="ExternalInit" type="0x0006">
+  Used in external commits to join a group (requires path)
+</ResponseField>
+
+<ResponseField name="GroupContextExtensions" type="0x0007">
+  Request to update group context extensions (requires path)
+</ResponseField>
+
+<ResponseField name="SelfRemove" type="0x000a">
+  Extension: Request to remove oneself from the group (requires path)
+</ResponseField>
+
+## Proposal Enum
+
+The `Proposal` enum contains all proposal variants.
+
+```rust
+pub enum Proposal {
+    Add(Box<AddProposal>),
+    Update(Box<UpdateProposal>),
+    Remove(Box<RemoveProposal>),
+    PreSharedKey(Box<PreSharedKeyProposal>),
+    ReInit(Box<ReInitProposal>),
+    ExternalInit(Box<ExternalInitProposal>),
+    GroupContextExtensions(Box<GroupContextExtensionProposal>),
+    SelfRemove,
+    Custom(Box<CustomProposal>),
+}
+```
+
+### Methods
+
+<ParamField path="proposal_type()" type="ProposalType">
+  Returns the type of this proposal
+</ParamField>
+
+<ParamField path="is_path_required()" type="bool">
+  Returns `true` if a Commit containing this proposal requires an update path
+</ParamField>
+
+<ParamField path="is_remove()" type="bool">
+  Returns `true` if this is a Remove proposal
+</ParamField>
+
+## AddProposal
+
+Request to add a new member with the specified KeyPackage.
+
+```c
+// RFC 9420
+struct {
+    KeyPackage key_package;
+} Add;
+```
+
+<ParamField path="key_package" type="KeyPackage" required>
+  The KeyPackage of the new member to add
+</ParamField>
+
+### Example
+
+```rust
+use openmls::prelude::*;
+
+// Create add proposal
+let proposal = group.propose_add_member(
+    provider,
+    &signer,
+    &joiner_key_package
+)?;
+```
+
+## UpdateProposal
+
+Request to replace the sender's leaf node with a new one.
+
+```c
+// RFC 9420
+struct {
+    LeafNode leaf_node;
+} Update;
+```
+
+<ParamField path="leaf_node" type="LeafNode" required>
+  The new leaf node to replace the sender's current leaf
+</ParamField>
+
+### Example
+
+```rust
+// Propose update (generates new leaf node)
+let proposal = group.propose_self_update(
+    provider,
+    &signer,
+)?;
+```
+
+<Note>
+  Update proposals require the commit to include an update path to refresh encryption keys.
+</Note>
+
+## RemoveProposal
+
+Request to remove a member at the specified leaf index.
+
+```c
+// RFC 9420
+struct {
+    uint32 removed;
+} Remove;
+```
+
+<ParamField path="removed" type="uint32" required>
+  The leaf index of the member to remove
+</ParamField>
+
+### Example
+
+```rust
+// Propose to remove a member
+let leaf_index = LeafNodeIndex::new(5);
+let proposal = group.propose_remove_member(
+    provider,
+    &signer,
+    leaf_index
+)?;
+```
+
+## PreSharedKeyProposal
+
+Request to inject a pre-shared key into the key schedule.
+
+```c
+// RFC 9420
+struct {
+    PreSharedKeyID psk;
+} PreSharedKey;
+```
+
+<ParamField path="psk" type="PreSharedKeyId" required>
+  Identifier for the pre-shared key to inject
+</ParamField>
+
+### Example
+
+```rust
+use openmls::prelude::*;
+
+// Create PSK proposal
+let psk_id = PreSharedKeyId::new(/* ... */);
+let proposal = PreSharedKeyProposal::new(psk_id);
+```
+
+## ReInitProposal
+
+Request to reinitialize the group with different parameters.
+
+```c
+// RFC 9420
+struct {
+    opaque group_id<V>;
+    ProtocolVersion version;
+    CipherSuite cipher_suite;
+    Extension extensions<V>;
+} ReInit;
+```
+
+<ParamField path="group_id" type="GroupId" required>
+  The group ID for the new reinitialized group
+</ParamField>
+
+<ParamField path="version" type="ProtocolVersion" required>
+  The protocol version for the new group
+</ParamField>
+
+<ParamField path="ciphersuite" type="Ciphersuite" required>
+  The ciphersuite for the new group
+</ParamField>
+
+<ParamField path="extensions" type="Extensions<GroupContext>" required>
+  Extensions for the new group context
+</ParamField>
+
+## ExternalInitProposal
+
+Used in external commits to provide KEM output for key agreement.
+
+```c
+// RFC 9420
+struct {
+    opaque kem_output<V>;
+} ExternalInit;
+```
+
+<ParamField path="kem_output" type="opaque<V>" required>
+  The KEM output from encapsulating to the group's external public key
+</ParamField>
+
+## GroupContextExtensionProposal
+
+Request to update the group context extensions.
+
+```c
+// RFC 9420
+struct {
+    Extension extensions<V>;
+} GroupContextExtensions;
+```
+
+<ParamField path="extensions" type="Extensions<GroupContext>" required>
+  The new set of group context extensions
+</ParamField>
+
+### Example
+
+```rust
+// Update group context extensions
+let new_extensions = Extensions::default();
+let proposal = GroupContextExtensionProposal::new(new_extensions);
+```
+
+## AppDataUpdateProposal
+
+<Note>
+  Available with `extensions-draft-08` feature flag
+</Note>
+
+Update or remove application-specific data associated with a component.
+
+```c
+struct {
+    ComponentID component_id;
+    AppDataUpdateOperation op;
+    
+    select (AppDataUpdate.op) {
+        case update: opaque update<V>;
+        case remove: struct{};
+    };
+} AppDataUpdate;
+```
+
+<ParamField path="component_id" type="ComponentId" required>
+  Identifier of the component being updated
+</ParamField>
+
+<ParamField path="operation" type="AppDataUpdateOperation" required>
+  Either `Update(data)` or `Remove`
+</ParamField>
+
+### Example
+
+```rust
+use openmls::prelude::*;
+
+// Update component data
+let component_id = ComponentId::from(1u32);
+let proposal = AppDataUpdateProposal::update(
+    component_id,
+    b"new data".to_vec()
+);
+
+// Remove component data
+let proposal = AppDataUpdateProposal::remove(component_id);
+```
+
+## AppEphemeralProposal
+
+<Note>
+  Available with `extensions-draft-08` feature flag
+</Note>
+
+Carry ephemeral application data within a proposal.
+
+```c
+struct {
+    ComponentID component_id;
+    opaque data<V>;
+} AppEphemeral;
+```
+
+<ParamField path="component_id" type="ComponentId" required>
+  Component identifier
+</ParamField>
+
+<ParamField path="data" type="opaque<V>" required>
+  Ephemeral application data
+</ParamField>
+
+## CustomProposal
+
+Application-defined proposal with custom semantics.
+
+```rust
+pub struct CustomProposal {
+    proposal_type: u16,
+    payload: Vec<u8>,
+}
+```
+
+<ParamField path="proposal_type" type="uint16" required>
+  Application-defined proposal type (must not conflict with standard types)
+</ParamField>
+
+<ParamField path="payload" type="Vec<u8>" required>
+  Application-defined payload data
+</ParamField>
+
+### Example
+
+```rust
+let custom_proposal = CustomProposal::new(
+    0xF001, // Custom type in private use range
+    vec![1, 2, 3, 4]
+);
+```
+
+## ProposalOrRef
+
+Proposals can be included in commits by value or by reference.
+
+```c
+// RFC 9420
+enum {
+    proposal(1),
+    reference(2),
+} ProposalOrRefType;
+
+struct {
+    ProposalOrRefType type;
+    select (ProposalOrRef.type) {
+        case proposal: Proposal proposal;
+        case reference: opaque hash<0..255>;
+    }
+} ProposalOrRef;
+```
+
+<ResponseField name="Proposal" type="Box<Proposal>">
+  Proposal included by value (full proposal in commit)
+</ResponseField>
+
+<ResponseField name="Reference" type="Box<ProposalRef>">
+  Proposal included by reference (hash of authenticated content)
+</ResponseField>
+
+### Computing References
+
+```rust
+use openmls::prelude::*;
+
+// Proposal reference is hash of AuthenticatedContent
+let proposal_ref = ProposalRef::from_authenticated_content_by_ref(
+    crypto,
+    ciphersuite,
+    &authenticated_content
+)?;
+```
+
+## Proposal Validation
+
+Proposals undergo validation when processed.
+
+### Validation Rules
+
+- **Add**: KeyPackage must be valid and not already in group
+- **Update**: LeafNode must be valid and signed by sender
+- **Remove**: Target index must exist and be occupied
+- **Path Required**: Certain proposals require the commit to include an update path
+
+### Path Requirements
+
+These proposal types require the commit to include an update path:
+- Update
+- Remove  
+- ExternalInit
+- GroupContextExtensions
+- SelfRemove
+
+```rust
+if proposal.is_path_required() {
+    // Commit must include update path
+}
+```
+
+## Proposal Priority
+
+When multiple proposals target the same leaf, priority determines which applies:
+
+1. **SelfRemove** (highest priority)
+2. **Remove** (later removes override earlier)
+3. **Update** (lowest priority)
+
+## Serialization
+
+Proposals are serialized using TLS encoding.
+
+```rust
+use tls_codec::{Serialize, Deserialize};
+
+// Serialize
+let bytes = proposal.tls_serialize_detached()?;
+
+// Deserialize (requires ProposalIn type for validation)
+let proposal_in = ProposalIn::tls_deserialize(&mut bytes.as_slice())?;
+```
+
+## Examples
+
+### Creating Proposals
+
+```rust
+use openmls::prelude::*;
+
+// Add member
+let add_proposal = group.propose_add_member(
+    provider,
+    &signer,
+    &key_package
+)?;
+
+// Update self
+let update_proposal = group.propose_self_update(
+    provider,
+    &signer,
+)?;
+
+// Remove member
+let remove_proposal = group.propose_remove_member(
+    provider,
+    &signer,
+    leaf_index
+)?;
+```
+
+### Processing Proposals
+
+```rust
+// Receive and process proposal
+let processed = group.process_message(provider, protocol_message)?;
+
+if let ProcessedMessageContent::ProposalMessage(proposal) => {
+    // Proposal is stored in proposal queue
+    // Will be applied when a commit is processed
+}
+```
+
+## Related Types
+
+- [Commits](/api/messages/commits) - Apply proposals atomically
+- [Message Framing](/api/messages/framing) - Message wrapper types

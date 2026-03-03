@@ -1,0 +1,372 @@
+---
+title: Leaving a Group
+description: Leave an MLS group gracefully
+---
+
+## Overview
+
+Leave a group by creating a Remove proposal for yourself. Another member must commit this proposal to complete the removal. There are two methods:
+
+1. **Remove Proposal** - Standard leave mechanism
+2. **SelfRemove Proposal** - Alternative mechanism sent as PublicMessage
+
+## Leaving a Group
+
+### Standard Leave
+
+Create a Remove proposal targeting yourself:
+
+```rust
+use openmls::prelude::*;
+
+let leave_proposal = alice_group.leave_group(
+    provider,
+    &signer,
+)?;
+
+// Send to group members
+delivery_service.send_to_group(alice_group.group_id(), leave_proposal)?;
+
+// Wait for another member to commit
+```
+
+### SelfRemove Leave
+
+Use the SelfRemove proposal type (always sent as PublicMessage):
+
+```rust
+let self_remove_proposal = alice_group.leave_group_via_self_remove(
+    provider,
+    &signer,
+)?;
+
+// Send to group members
+delivery_service.send_to_group(alice_group.group_id(), self_remove_proposal)?;
+
+// Wait for another member to commit
+```
+
+## Method Signatures
+
+### `leave_group`
+
+Create a Remove proposal for yourself.
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Your signature key
+</ParamField>
+
+**Returns:** `Result<MlsMessageOut, LeaveGroupError>`
+
+Returns a Remove proposal message to send to the group.
+
+**Location:** `openmls/src/group/mls_group/membership.rs:228`
+
+### `leave_group_via_self_remove`
+
+Create a SelfRemove proposal (always PublicMessage).
+
+<ParamField path="provider" type="&Provider" required>
+  OpenMLS provider for crypto and storage
+</ParamField>
+
+<ParamField path="signer" type="&impl Signer" required>
+  Your signature key
+</ParamField>
+
+**Returns:** `Result<MlsMessageOut, LeaveGroupError>`
+
+Returns a SelfRemove proposal. Fails if wire format policy is AlwaysCiphertext.
+
+**Location:** `openmls/src/group/mls_group/membership.rs:273`
+
+## Complete Example
+
+<Steps>
+  <Step title="Create leave proposal">
+    ```rust
+    let leave_msg = alice_group.leave_group(
+        provider,
+        &alice_signer,
+    )?;
+    
+    println!("Alice is leaving the group");
+    ```
+  </Step>
+
+  <Step title="Send to group">
+    ```rust
+    // Send to all group members
+    delivery_service.send_to_group(
+        alice_group.group_id(),
+        leave_msg,
+    )?;
+    ```
+  </Step>
+
+  <Step title="Another member commits">
+    ```rust
+    // Bob receives Alice's leave proposal
+    let processed = bob_group.process_message(provider, leave_msg)?;
+    
+    if let ProcessedMessageContent::ProposalMessage(proposal) = 
+        processed.into_content()
+    {
+        // Store the proposal
+        bob_group.store_pending_proposal(
+            provider.storage(),
+            *proposal,
+        )?;
+        
+        // Commit the proposal
+        let (commit, welcome, group_info) = bob_group
+            .commit_to_pending_proposals(provider, &bob_signer)?;
+        
+        delivery_service.send_to_group(bob_group.group_id(), commit)?;
+        
+        bob_group.merge_pending_commit(provider)?;
+    }
+    ```
+  </Step>
+
+  <Step title="Process the commit">
+    ```rust
+    // Alice receives Bob's commit
+    let processed = alice_group.process_message(provider, commit_msg)?;
+    
+    if let ProcessedMessageContent::StagedCommitMessage(staged_commit) = 
+        processed.into_content()
+    {
+        // Check if we were removed
+        assert!(staged_commit.self_removed());
+        
+        // Merge - group becomes inactive
+        alice_group.merge_staged_commit(provider, *staged_commit)?;
+        
+        // Group is now inactive
+        assert!(!alice_group.is_active());
+    }
+    ```
+  </Step>
+</Steps>
+
+## After Leaving
+
+Once your removal is committed and merged:
+
+```rust
+// Check group state
+if !alice_group.is_active() {
+    println!("Group is inactive - we were removed");
+}
+
+// Attempting operations will fail
+match alice_group.self_update(provider, &signer, params) {
+    Err(SelfUpdateError::GroupStateError(
+        MlsGroupStateError::UseAfterEviction
+    )) => {
+        println!("Cannot use group after eviction");
+    }
+    _ => unreachable!(),
+}
+
+// Clean up
+alice_group.delete(provider.storage())?;
+```
+
+## Error Handling
+
+```rust
+match alice_group.leave_group(provider, &signer) {
+    Ok(proposal) => {
+        // Send to group
+    }
+    Err(LeaveGroupError::GroupStateError(state_error)) => {
+        match state_error {
+            MlsGroupStateError::PendingCommit => {
+                // Must merge or clear pending commit first
+            }
+            MlsGroupStateError::UseAfterEviction => {
+                // Already removed from group
+            }
+        }
+    }
+    Err(LeaveGroupError::CannotSelfRemoveWithPureCiphertext) => {
+        // Can only use leave_group_via_self_remove() if wire format
+        // allows PublicMessage. Use leave_group() instead.
+    }
+    Err(e) => eprintln!("Error leaving: {}", e),
+}
+```
+
+## Detecting Leave Operations
+
+When processing commits, identify leave operations:
+
+```rust
+for remove_proposal in staged_commit.remove_proposals() {
+    let operation = RemoveOperation::new(
+        remove_proposal.clone(),
+        &group,
+    )?;
+    
+    match operation {
+        RemoveOperation::WeLeft => {
+            println!("Our leave request was committed");
+        }
+        RemoveOperation::TheyLeft(index) => {
+            println!("Member {} left the group", index);
+        }
+        RemoveOperation::TheyWereRemovedBy((index, sender)) => {
+            println!("Member {} was removed by {:?}", index, sender);
+        }
+        _ => {}
+    }
+}
+```
+
+## Remove vs SelfRemove
+
+### Remove Proposal (Standard)
+
+- Can be sent as PrivateMessage or PublicMessage
+- Standard MLS mechanism
+- Works with any wire format policy
+- Member removes themselves
+
+```rust
+let proposal = alice_group.leave_group(provider, &signer)?;
+```
+
+### SelfRemove Proposal
+
+- Always sent as PublicMessage
+- Requires wire format policy that allows PublicMessage
+- Semantically indicates self-removal
+- Fails with `CannotSelfRemoveWithPureCiphertext` if policy is AlwaysCiphertext
+
+```rust
+let proposal = alice_group.leave_group_via_self_remove(provider, &signer)?;
+```
+
+## Advanced Usage
+
+### Committing Your Own Leave
+
+If you're the only member who can commit:
+
+```rust
+// Create leave proposal
+let _proposal = alice_group.leave_group(provider, &alice_signer)?;
+
+// Immediately commit it
+let (commit, _, _) = alice_group
+    .commit_to_pending_proposals(provider, &alice_signer)?;
+
+delivery_service.send_to_group(alice_group.group_id(), commit)?;
+
+alice_group.merge_pending_commit(provider)?;
+
+assert!(!alice_group.is_active());
+```
+
+### Leave with Custom Proposal Filter
+
+```rust
+// Create leave proposal manually
+let removed = alice_group.own_leaf_index();
+let remove_proposal = alice_group.create_remove_proposal(
+    alice_group.framing_parameters(),
+    removed,
+    &alice_signer,
+)?;
+
+// Store it
+let queued = QueuedProposal::from_authenticated_content_by_ref(
+    alice_group.ciphersuite(),
+    provider.crypto(),
+    remove_proposal.clone(),
+)?;
+
+alice_group.store_pending_proposal(provider.storage(), queued)?;
+
+// Send proposal message
+let msg = alice_group.content_to_mls_message(remove_proposal, provider)?;
+```
+
+## Group Cleanup
+
+After leaving, clean up the group:
+
+```rust
+if !alice_group.is_active() {
+    // Clear from storage
+    MlsGroup::delete(
+        provider.storage(),
+        alice_group.group_id(),
+    )?;
+    
+    // Or just drop the group
+    drop(alice_group);
+}
+```
+
+## Important Notes
+
+<Warning>
+  **Two-Step Process**: Leaving requires another member to commit your removal proposal. You cannot leave instantly.
+</Warning>
+
+<Warning>
+  **Cannot Self-Commit**: In a two-person group, if the other member is offline, you cannot leave until they come back and commit your removal.
+</Warning>
+
+<Info>
+  **Inactive After Leave**: Once your removal is committed and merged, the group becomes inactive. All operations will fail with `UseAfterEviction`.
+</Info>
+
+<Info>
+  **Proposal Storage**: The leave proposal is automatically stored in the group's proposal store when created.
+</Info>
+
+<Info>
+  **SelfRemove Restriction**: `leave_group_via_self_remove()` only works if the wire format policy allows PublicMessage. Use `leave_group()` if using AlwaysCiphertext policy.
+</Info>
+
+## Alternative: Being Removed
+
+Another member can remove you directly:
+
+```rust
+// Bob removes Alice
+let (commit, _, _) = bob_group.remove_members(
+    provider,
+    &bob_signer,
+    &[alice_leaf_index],
+)?;
+
+// Alice processes the removal
+let processed = alice_group.process_message(provider, commit)?;
+
+if let ProcessedMessageContent::StagedCommitMessage(staged) = 
+    processed.into_content()
+{
+    if staged.self_removed() {
+        println!("We were removed by another member");
+    }
+    
+    alice_group.merge_staged_commit(provider, *staged)?;
+}
+```
+
+See [Removing Members](/api/group/remove-members) for more details.
+
+## Next Steps
+
+- [Join a new group](/api/group/join)
+- [Create a new group](/api/group/create)
+- Clean up resources and storage

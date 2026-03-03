@@ -1,0 +1,344 @@
+---
+title: 'External commits'
+description: 'Join groups without an invitation using external commits'
+icon: 'arrow-right-to-bracket'
+---
+
+External commits allow new members to join a group using publicly available group information, without receiving a Welcome message. This is useful for public groups or when members need to rejoin after being removed.
+
+## Overview
+
+Unlike the standard invitation flow where an existing member adds new members, external commits allow:
+
+- Joining public or semi-public groups
+- Self-service group membership
+- Rejoining after being removed
+- Adding pre-shared keys during join
+
+<Warning>
+External commits bypass the normal invitation mechanism. Ensure group information is obtained through a secure channel.
+</Warning>
+
+## Prerequisites
+
+To join via external commit, you need:
+
+1. **GroupInfo** - Contains group state and configuration
+2. **Ratchet tree** - Public key material (if not in GroupInfo extension)
+3. **Credentials** - Your identity credentials and signature keys
+
+## Obtaining group information
+
+Existing members can export group information:
+
+```rust
+let verifiable_group_info = alice_group
+    .export_group_info(
+        provider.crypto(),
+        &signer,
+        true // Include ratchet tree extension
+    )
+    .expect("Cannot export group info")
+    .into_verifiable_group_info()
+    .expect("Could not get group info");
+```
+
+<Tip>
+Including the ratchet tree extension (`true`) simplifies the join process by embedding public keys in the GroupInfo.
+</Tip>
+
+The GroupInfo should be shared over a secure channel:
+
+```rust
+// Share via secure channel (implementation-specific)
+secure_channel.send(verifiable_group_info.tls_serialize_detached().unwrap());
+```
+
+## Basic external commit
+
+The simplest way to join via external commit:
+
+```rust
+use openmls::prelude::*;
+
+// Configure join settings
+let join_config = MlsGroupJoinConfig::builder()
+    .padding_size(100)
+    .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .build();
+
+// Join the group
+let (mut dave_group, bundle) = MlsGroup::external_commit_builder()
+    .with_config(join_config)
+    .build_group(provider, verifiable_group_info, credential_with_key)
+    .unwrap()
+    .load_psks(provider.storage())
+    .unwrap()
+    .build(
+        provider.rand(),
+        provider.crypto(),
+        &signer,
+        |_| true,
+    )
+    .unwrap()
+    .finalize(provider)
+    .expect("Error joining from external commit");
+
+// Merge the commit to activate the group
+dave_group
+    .merge_pending_commit(provider)
+    .expect("Cannot merge commit");
+```
+
+## Advanced external commit
+
+The external commit builder provides additional options:
+
+```rust
+const PADDING_SIZE: usize = 256;
+const AAD: &[u8] = b"some additional authenticated data";
+
+// Configure leaf node capabilities
+let capabilities = Capabilities::builder()
+    .proposals(vec![ProposalType::SelfRemove])
+    .build();
+
+let leaf_node_parameters = LeafNodeParameters::builder()
+    .with_capabilities(capabilities.clone())
+    .build();
+
+// Configure join settings
+let join_config = MlsGroupJoinConfig::builder()
+    .padding_size(PADDING_SIZE)
+    .wire_format_policy(PURE_PLAINTEXT_WIRE_FORMAT_POLICY)
+    .build();
+
+// Build external commit with all options
+let (mut bob_group, commit_message_bundle) = MlsGroup::external_commit_builder()
+    .with_ratchet_tree(tree_option.into())
+    .with_config(join_config.clone())
+    .with_aad(AAD.to_vec())
+    .build_group(
+        provider,
+        verifiable_group_info,
+        credential_with_key.clone(),
+    )
+    .expect("error building group")
+    .leaf_node_parameters(leaf_node_parameters)
+    .load_psks(provider.storage())
+    .expect("error loading psks")
+    .build(
+        provider.rand(),
+        provider.crypto(),
+        &signer,
+        |_| true,
+    )
+    .expect("error building external commit")
+    .finalize(provider)
+    .expect("error finalizing external commit");
+```
+
+## Including proposals
+
+External commits can include certain proposal types:
+
+### Self-remove proposal
+
+Remove another member during join:
+
+```rust
+// Configure capabilities to support SelfRemove
+let capabilities = Capabilities::builder()
+    .proposals(vec![ProposalType::SelfRemove])
+    .build();
+
+// SelfRemove proposals must use plaintext wire format
+const POLICY: WireFormatPolicy = PURE_PLAINTEXT_WIRE_FORMAT_POLICY;
+
+let mut alice_group = MlsGroup::builder()
+    .ciphersuite(ciphersuite)
+    .with_wire_format_policy(POLICY)
+    .with_capabilities(capabilities.clone())
+    .build(provider, &signer, credential_with_key)
+    .unwrap();
+```
+
+### Pre-shared key (PSK) proposal
+
+Include PSKs in external commit:
+
+```rust
+// Create and store PSK
+let psk_id_bytes = vec![0, 1, 2, 3];
+let psk_id = Psk::External(ExternalPsk::new(psk_id_bytes.clone()));
+let psk = PreSharedKeyId::new(ciphersuite, provider.rand(), psk_id).unwrap();
+let psk_value = vec![4, 5, 6, 7];
+psk.store(provider, &psk_value).unwrap();
+
+// External commit builder will include PSK proposals
+// when load_psks() is called
+```
+
+## Processing external commits
+
+Existing members process external commits like regular commits:
+
+```rust
+// Extract the commit from the bundle
+let plaintext = commit_message_bundle
+    .into_commit()
+    .into_protocol_message()
+    .unwrap();
+
+// Process the external commit
+let processed_message = alice_group
+    .process_message(provider, plaintext)
+    .unwrap();
+
+let ProcessedMessageContent::StagedCommitMessage(staged_commit) =
+    processed_message.into_content()
+else {
+    panic!("Expected a staged commit message.");
+};
+
+// Merge the commit
+alice_group
+    .merge_staged_commit(provider, *staged_commit)
+    .unwrap();
+```
+
+## Wire format considerations
+
+<Note>
+SelfRemove and PSK proposals in external commits must be sent as public messages, requiring `PURE_PLAINTEXT_WIRE_FORMAT_POLICY`.
+</Note>
+
+Configure wire format policy:
+
+```rust
+use openmls::prelude::*;
+
+const POLICY: WireFormatPolicy = PURE_PLAINTEXT_WIRE_FORMAT_POLICY;
+
+let mut group = MlsGroup::builder()
+    .with_wire_format_policy(POLICY)
+    .build(provider, &signer, credential_with_key)
+    .unwrap();
+```
+
+## Security considerations
+
+<Warning>
+External commits have important security implications:
+
+- Anyone with GroupInfo can attempt to join
+- Verify group information authenticity before joining
+- Consider implementing application-level access control
+- Monitor for unexpected external joins
+</Warning>
+
+### Authenticating group information
+
+Verify GroupInfo signatures:
+
+```rust
+// GroupInfo is automatically verified during build_group()
+// The verifiable_group_info parameter ensures signature validation
+let (group, _) = MlsGroup::external_commit_builder()
+    .build_group(
+        provider,
+        verifiable_group_info, // Signature is validated here
+        credential_with_key,
+    )
+    .unwrap();
+```
+
+### Application-level authorization
+
+Implement additional access control:
+
+```rust
+// Example: Check if credential is authorized
+fn is_authorized(credential: &Credential) -> bool {
+    // Check against allow-list, verify attributes, etc.
+    authorized_credentials.contains(credential)
+}
+
+// Validate before processing external commit
+if !is_authorized(&processed_message.credential()) {
+    return Err("Unauthorized external commit");
+}
+```
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Public groups" icon="users">
+    Groups where anyone can join by obtaining public GroupInfo:
+    
+    ```rust
+    // Publish GroupInfo periodically
+    let group_info = group.export_group_info(crypto, &signer, true).unwrap();
+    public_directory.publish(group_id, group_info);
+    
+    // New members fetch and join
+    let group_info = public_directory.fetch(group_id);
+    let (my_group, _) = MlsGroup::external_commit_builder()
+        .build_group(provider, group_info, my_credentials)
+        .unwrap()
+        .finalize(provider)
+        .unwrap();
+    ```
+  </Accordion>
+  
+  <Accordion title="Rejoining after removal" icon="arrow-rotate-left">
+    Members can rejoin after being removed:
+    
+    ```rust
+    // Member was removed but saved GroupInfo
+    let saved_group_info = load_from_storage();
+    
+    // Rejoin using external commit
+    let (rejoined_group, _) = MlsGroup::external_commit_builder()
+        .build_group(provider, saved_group_info, my_credentials)
+        .unwrap()
+        .finalize(provider)
+        .unwrap();
+    ```
+  </Accordion>
+  
+  <Accordion title="Pre-authorized joins" icon="key">
+    Use PSKs to authenticate external joins:
+    
+    ```rust
+    // Share PSK with authorized joiners
+    let psk_value = generate_psk();
+    share_psk_securely(&authorized_user, &psk_value);
+    
+    // Joiner includes PSK in external commit
+    psk.store(provider, &psk_value).unwrap();
+    let (group, _) = MlsGroup::external_commit_builder()
+        .build_group(provider, group_info, credentials)
+        .unwrap()
+        .load_psks(provider.storage())
+        .unwrap()
+        .build(provider.rand(), provider.crypto(), &signer, |_| true)
+        .unwrap()
+        .finalize(provider)
+        .unwrap();
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Limitations
+
+- Not all proposal types can be included in external commits
+- Requires PURE_PLAINTEXT_WIRE_FORMAT_POLICY for certain proposals
+- GroupInfo must be reasonably up-to-date
+- May be rejected if group membership has changed significantly
+
+## Related
+
+- [Joining Groups](/user-manual/joining-groups) - Standard invitation flow
+- [Group Configuration](/user-manual/group-configuration) - Wire format policies
+- Source: `join_by_external_commit()` in `/workspace/source/openmls/tests/book_code.rs:320`
