@@ -33,7 +33,7 @@ The `openmls_rust_crypto` provider uses pure Rust cryptographic implementations:
 ```toml Cargo.toml
 [dependencies]
 openmls = "0.8.1"
-openmls_rust_crypto = "0.4"
+openmls_rust_crypto = "0.5"
 ```
 
 ### Option 2: libcrux provider
@@ -60,7 +60,7 @@ For testing and development, use the memory storage provider:
 ```toml Cargo.toml
 [dependencies]
 openmls = { version = "0.8.1", features = ["test-utils"] }
-openmls_memory_storage = "0.3"
+openmls_memory_storage = "0.5"
 ```
 
 <Warning>
@@ -83,7 +83,7 @@ For basic credential support, add the basic credential crate:
 ```toml Cargo.toml
 [dependencies]
 openmls = "0.8.1"
-openmls_basic_credential = "0.4"
+openmls_basic_credential = "0.5"
 ```
 
 ## Feature flags
@@ -182,9 +182,9 @@ OpenMLS provides several optional features:
 ```toml Cargo.toml
 [dependencies]
 openmls = { version = "0.8.1", features = ["test-utils"] }
-openmls_rust_crypto = "0.4"
-openmls_basic_credential = "0.4"
-openmls_memory_storage = "0.3"
+openmls_rust_crypto = "0.5"
+openmls_basic_credential = "0.5"
+openmls_memory_storage = "0.5"
 ```
 
 ### For production
@@ -192,8 +192,8 @@ openmls_memory_storage = "0.3"
 ```toml Cargo.toml
 [dependencies]
 openmls = { version = "0.8.1", features = ["sqlite-provider", "fork-resolution"] }
-openmls_rust_crypto = "0.4"
-openmls_basic_credential = "0.4"
+openmls_rust_crypto = "0.5"
+openmls_basic_credential = "0.5"
 ```
 
 ### For WebAssembly
@@ -201,9 +201,9 @@ openmls_basic_credential = "0.4"
 ```toml Cargo.toml
 [dependencies]
 openmls = { version = "0.8.1", features = ["js"] }
-openmls_rust_crypto = "0.4"
-openmls_basic_credential = "0.4"
-openmls_memory_storage = "0.3"
+openmls_rust_crypto = "0.5"
+openmls_basic_credential = "0.5"
+openmls_memory_storage = "0.5"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

@@ -15,7 +15,7 @@ Add the memory storage crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-openmls_memory_storage = "0.2"
+openmls_memory_storage = "0.5"
 openmls_traits = "0.2"
 ```
 
@@ -52,7 +52,7 @@ let storage_clone = storage.clone();
 With the `test-utils` feature, you can serialize and deserialize storage:
 
 ```toml
-openmls_memory_storage = { version = "0.2", features = ["test-utils"] }
+openmls_memory_storage = { version = "0.5", features = ["test-utils"] }
 ```
 
 ```rust
@@ -74,7 +74,7 @@ let restored = MemoryStorage::deserialize(&mut cursor)?;
 With the `persistence` feature, you can save and load storage from disk:
 
 ```toml
-openmls_memory_storage = { version = "0.2", features = ["persistence"] }
+openmls_memory_storage = { version = "0.5", features = ["persistence"] }
 ```
 
 ```rust
