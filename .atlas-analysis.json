@@ -1,0 +1,228 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "OpenMLS",
+  "projectDescription": "Rust implementation of the Messaging Layer Security (MLS) protocol for end-to-end encrypted messaging",
+  "theme": "aspen",
+  "primaryColor": "#1e40af",
+  "lightColor": "#3b82f6",
+  "darkColor": "#1e3a8a",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/mls-protocol",
+              "concepts/architecture",
+              "concepts/ciphersuites",
+              "concepts/credentials",
+              "concepts/key-packages"
+            ]
+          },
+          {
+            "group": "User Manual",
+            "pages": [
+              "user-manual/creating-groups",
+              "user-manual/joining-groups",
+              "user-manual/managing-members",
+              "user-manual/sending-messages",
+              "user-manual/processing-messages",
+              "user-manual/key-updates",
+              "user-manual/group-configuration",
+              "user-manual/persistence",
+              "user-manual/credential-validation"
+            ]
+          },
+          {
+            "group": "Advanced Topics",
+            "pages": [
+              "advanced/custom-proposals",
+              "advanced/fork-resolution",
+              "advanced/external-commits",
+              "advanced/grease-support",
+              "advanced/aad-usage",
+              "advanced/webassembly"
+            ]
+          },
+          {
+            "group": "Provider Traits",
+            "pages": [
+              "traits/overview",
+              "traits/crypto-provider",
+              "traits/storage-provider",
+              "traits/random-provider",
+              "traits/custom-implementation"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/message-validation",
+              "security/app-validation",
+              "security/forward-secrecy"
+            ]
+          },
+          {
+            "group": "Performance",
+            "pages": [
+              "performance/optimization",
+              "performance/benchmarks"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/mls-group",
+              "api/public-group",
+              "api/staged-welcome",
+              "api/staged-commit"
+            ]
+          },
+          {
+            "group": "Group Operations",
+            "pages": [
+              "api/group/create",
+              "api/group/join",
+              "api/group/add-members",
+              "api/group/remove-members",
+              "api/group/update",
+              "api/group/leave"
+            ]
+          },
+          {
+            "group": "Messages",
+            "pages": [
+              "api/messages/application",
+              "api/messages/proposals",
+              "api/messages/commits",
+              "api/messages/welcome",
+              "api/messages/framing"
+            ]
+          },
+          {
+            "group": "Cryptography",
+            "pages": [
+              "api/ciphersuite",
+              "api/credentials",
+              "api/key-packages",
+              "api/signatures"
+            ]
+          },
+          {
+            "group": "Extensions",
+            "pages": [
+              "api/extensions/overview",
+              "api/extensions/required-capabilities",
+              "api/extensions/external-senders",
+              "api/extensions/application-id",
+              "api/extensions/custom"
+            ]
+          },
+          {
+            "group": "Tree Structure",
+            "pages": [
+              "api/tree/ratchet-tree",
+              "api/tree/leaf-node",
+              "api/tree/parent-node"
+            ]
+          },
+          {
+            "group": "Storage",
+            "pages": [
+              "api/storage/memory",
+              "api/storage/sqlite",
+              "api/storage/custom"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Basic Examples",
+            "pages": [
+              "examples/two-party-chat",
+              "examples/group-chat",
+              "examples/key-rotation"
+            ]
+          },
+          {
+            "group": "Integration Examples",
+            "pages": [
+              "examples/custom-crypto",
+              "examples/custom-storage",
+              "examples/server-integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Additional Resources",
+            "pages": [
+              "resources/migration-guides",
+              "resources/faq",
+              "resources/troubleshooting",
+              "resources/contributing",
+              "resources/changelog"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "RFC 9420 compliant MLS protocol implementation",
+    "End-to-end encrypted group messaging",
+    "Multiple ciphersuite support (X25519, P-256, ChaCha20-Poly1305)",
+    "Flexible trait-based architecture for crypto and storage providers",
+    "Key package and credential management",
+    "Group creation, joining, and member management",
+    "Application message encryption and decryption",
+    "Forward secrecy and post-compromise security",
+    "Fork resolution for handling concurrent group state changes",
+    "WebAssembly support for browser environments",
+    "Built-in storage providers (memory, SQLite)",
+    "External commit support for dynamic joining"
+  ],
+  "publicApiSurface": [
+    "MlsGroup - Main group management API",
+    "MlsGroupCreateConfig - Group configuration",
+    "MlsGroupJoinConfig - Join configuration",
+    "KeyPackage - Cryptographic key packages",
+    "KeyPackageBundle - Key package with private keys",
+    "CredentialWithKey - Identity credentials",
+    "BasicCredential - Basic credential implementation",
+    "Ciphersuite - Cryptographic algorithm suites",
+    "MlsMessageIn - Incoming MLS messages",
+    "MlsMessageOut - Outgoing MLS messages",
+    "ProcessedMessage - Validated message content",
+    "StagedWelcome - Staged group join from Welcome",
+    "StagedCommit - Staged group state changes",
+    "PublicGroup - Read-only group state",
+    "LeafNode - Tree leaf node representation",
+    "Capabilities - Member capabilities",
+    "Extension - Protocol extensions",
+    "OpenMlsProvider - Provider trait for dependencies",
+    "OpenMlsCrypto - Cryptographic operations trait",
+    "StorageProvider - Key/group storage trait"
+  ]
+}
